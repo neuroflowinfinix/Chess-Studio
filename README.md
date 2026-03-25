@@ -29,6 +29,34 @@ A massive thank you to the open-source chess community. This project stands on t
 * Note: in the source code, the feature calibrate engine has been retained which works with a terminal, this feature will be removed from the release for normal users who are not developers.
 * Store and analyze your games from lichess.org and chess.com
 
+### The main UI with integrated openings panel
+
+<img width="1680" height="987" alt="python_xn92SdL6XA" src="https://github.com/user-attachments/assets/27a150cc-eb8d-4894-a31c-47a5772c9208" />
+
+### Engine settings
+
+<img width="1680" height="987" alt="python_pADuxM4qwI" src="https://github.com/user-attachments/assets/1a78f9d6-5bbb-4a81-8c81-1fb3e60d0cf4" />
+
+### v/s bot mode
+
+<img width="1680" height="987" alt="python_y6FxwTrAIp" src="https://github.com/user-attachments/assets/1f2a9023-1394-421c-a48d-de35ca69ee55" />
+
+### PGN imports
+
+<img width="1680" height="987" alt="python_5jiIrvJ55R" src="https://github.com/user-attachments/assets/74bd7824-cb4a-476e-a3e0-a163038ac93c" />
+
+### chess.com and lichess.org account imports
+
+<img width="1680" height="987" alt="python_PBViQBQvO2" src="https://github.com/user-attachments/assets/496a996e-9769-4596-9353-1e1fd3a0dd99" />
+
+### Interactive mate and openings trainer
+
+<img width="1680" height="987" alt="python_iZrccOgbE1" src="https://github.com/user-attachments/assets/a1cb4524-65a0-4275-8ced-3a8c95db441e" />
+
+### Detailed analysis and review
+
+<img width="1680" height="987" alt="python_VNDbpdx0KV" src="https://github.com/user-attachments/assets/afa97693-8f71-4444-aa5e-f9bf28c916fd" />
+
 ---
 
 ## 🚀 Installation & Setup
