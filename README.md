@@ -26,6 +26,7 @@ A massive thank you to the open-source chess community. This project stands on t
 * **📖 Grandmaster Explorer:** A fully integrated SQLite database explorer that asynchronously fetches master-level continuations and win rates without freezing the main event loop.
 * **🎯 Guided Practice Trainer:** An interactive opening trainer that uses 3-strike rules and dashed hint arrows to force you to memorize critical lines.
 * **📊 Deep Game Review:** Post-game analysis generates accuracy scores, categorizes moves (Brilliant, Great, Blunder, etc.), and saves annotated PGNs directly to a local profile archive.
+* ** Note: in the source code, the feature calibrate engine has been retained which works with a terminal, this feature will be removed from the release for normal users who are not developers.
 
 ---
 
@@ -82,6 +83,7 @@ A massive thank you to the open-source chess community. This project stands on t
 * `account_manager.py`: External network status monitoring.
 * `assets/`: Contains piece images, sounds, TTS voice maps, and archived PGN ledgers.
 * `engines/`: Directory for your local `.exe` UCI chess engines.
+* `build_db.py`: database builder.
 
 ---
 
@@ -97,4 +99,5 @@ Distributed under the MIT License. See `LICENSE` for more information.
 * **[python-chess](https://python-chess.readthedocs.io/en/latest/)** for the incredibly robust board representation and UCI protocol handling.
 * **[Lichess API](https://lichess.org/api)** for providing world-class cloud evaluation databases.
 * **[Pygame](https://www.pygame.org/)** for the rendering framework.
+* **[PGNMentor](https://www.pgnmentor.com/files.html#players)** for pgn files used in making database and .bin files for Checkmate_master bot.
 ```
