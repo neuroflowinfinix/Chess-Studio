@@ -851,15 +851,7 @@ class ChessApp:
             print("[AUDIO THREAD] pyttsx3 not installed. Please run: pip install pyttsx3")
             return
 
-        print("\n[AUDIO THREAD] Starting local pyttsx3 engine...")
-        
-        try:
-            tts_engine = pyttsx3.init()
-            voices = tts_engine.getProperty('voices')
-            total_voices = len(voices)
-        except Exception as e:
-            print(f"[AUDIO THREAD] Failed to initialize pyttsx3: {e}")
-            return
+        print("\n[AUDIO THREAD] Starting local pyttsx3 engine loop...")
 
         # ---------------------------------------------------------
         #  THE BOT PERSONA MATRIX (Speed-Adjusted)
@@ -892,6 +884,11 @@ class ChessApp:
                 
                 print(f"\n[AUDIO THREAD] Speaking line: {text[:40]}...")
                 
+                # --- THE FIX: INITIALIZE INSIDE THE LOOP ---
+                tts_engine = pyttsx3.init()
+                voices = tts_engine.getProperty('voices')
+                total_voices = len(voices)
+                
                 # Fetch persona (Default to David US if bot isn't found)
                 persona = bot_personas.get(bot_name, {"index": 0, "rate": 150})
                 
@@ -909,6 +906,9 @@ class ChessApp:
                 # Speak!
                 tts_engine.say(text)
                 tts_engine.runAndWait()
+                
+                # --- THE FIX: DESTROY ENGINE AFTER SPEAKING ---
+                del tts_engine
                 
             except Exception as e:
                 print(f"[AUDIO ERROR] Loop crashed: {e}")
