@@ -26,7 +26,8 @@ A massive thank you to the open-source chess community. This project stands on t
 * **📖 Grandmaster Explorer:** A fully integrated SQLite database explorer that asynchronously fetches master-level continuations and win rates without freezing the main event loop.
 * **🎯 Guided Practice Trainer:** An interactive opening trainer that uses 3-strike rules and dashed hint arrows to force you to memorize critical lines.
 * **📊 Deep Game Review:** Post-game analysis generates accuracy scores, categorizes moves (Brilliant, Great, Blunder, etc.), and saves annotated PGNs directly to a local profile archive.
-* ** Note: in the source code, the feature calibrate engine has been retained which works with a terminal, this feature will be removed from the release for normal users who are not developers.
+* Note: in the source code, the feature calibrate engine has been retained which works with a terminal, this feature will be removed from the release for normal users who are not developers.
+* Store and analyze your games from lichess.org and chess.com
 
 ---
 
