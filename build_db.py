@@ -4,7 +4,7 @@ import os
 import time
 import sys
 
-def build_explorer_database(pgn_path="assets/database/millionbase.pgn", db_path="assets/database/explorer.sqlite"):
+def build_explorer_database(pgn_path="assets/database/database.pgn", db_path="assets/database/explorer.sqlite"):
     print("Igniting Unrestricted Grandmaster Database Builder...")
     
     if not os.path.exists(pgn_path):
