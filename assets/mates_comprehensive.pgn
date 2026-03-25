@@ -1,0 +1,508 @@
+﻿[Event "Fool's Mate (Main Line)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "1"]
+[White "Blunderer"]
+[Black "Quick Mate"]
+[Result "0-1"]
+[ECO "A00"]
+[Annotator "chessflow"]
+1. f3 e5 2. g4 Qh4#
+{
+Fool's Mate - The fastest possible checkmate in chess history.
+White fatally weakens the kingside immediately by pushing the f and g pawns, opening the deadly e1-h4 diagonal for the Black Queen.
+} 0-1
+
+[Event "Fool's Mate (Reversed)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "2"]
+[White "Quick Mate"]
+[Black "Blunderer"]
+[Result "1-0"]
+[ECO "B00"]
+[Annotator "chessflow"]
+1. e4 f6 2. d4 g5 3. Qh5# {
+Reversed Fool's Mate - Black plays the disastrous f6 and g5 pushes, allowing the White Queen to swoop in. This is the fastest possible win for White.
+} 1-0
+
+[Event "Fool's Mate (Grob Variation)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "3"]
+[White "Blunderer"]
+[Black "Quick Mate"]
+[Result "0-1"]
+[ECO "A00"]
+[Annotator "chessflow"]
+1. g4 e5 2. f3 Qh4# {
+Grob's Fool's Mate - The exact same pattern as the Fool's Mate, but initiated from the Grob Opening (1. g4).
+} 0-1
+
+[Event "Fool's Mate (Bird's Opening Variation)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "4"]
+[White "Blunderer"]
+[Black "Quick Mate"]
+[Result "0-1"]
+[ECO "A02"]
+[Annotator "chessflow"]
+1. f4 e5 2. g4 Qh4# {
+Bird's Opening Fool's Mate - The disastrous sequence begins with the Dutch-style 1. f4, followed immediately by 2. g4 against the From's Gambit.
+} 0-1
+
+[Event "Fool's Mate (Barnes Opening Variation)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "5"]
+[White "Blunderer"]
+[Black "Quick Mate"]
+[Result "0-1"]
+[ECO "A00"]
+[Annotator "chessflow"]
+1. f3 e6 2. g4 Qh4# {
+Barnes Opening Fool's Mate - Even playing e6 instead of e5 is enough to allow the Black Queen to deliver the fatal blow on the unblocked diagonal.
+} 0-1
+
+[Event "Scholar's Mate (Main Line)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "6"]
+[White "Scholar"]
+[Black "Beginner"]
+[Result "1-0"]
+[ECO "C20"]
+[Annotator "chessflow"]
+1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7# {
+Scholar's Mate - The classic 4-move checkmate targeting the incredibly weak f7 pawn with the Queen and Bishop.
+} 1-0
+
+[Event "Scholar's Mate (Bishop First)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "7"]
+[White "Scholar"]
+[Black "Beginner"]
+[Result "1-0"]
+[ECO "C23"]
+[Annotator "chessflow"]
+1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# {
+Scholar's Mate - A slightly stealthier variation that develops the Bishop first before launching the Queen, hoping to catch Black off guard.
+} 1-0
+
+[Event "Scholar's Mate (3-Move Version)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "8"]
+[White "Scholar"]
+[Black "Beginner"]
+[Result "1-0"]
+[ECO "C23"]
+[Annotator "chessflow"]
+1. e4 e5 2. Bc4 Bc5 3. Qh5 d6 4. Qxf7# {
+Scholar's Mate - Black plays symmetrically but entirely ignores the massive threat of the White Queen on h5.
+} 1-0
+
+[Event "Scholar's Mate (Delayed Variation)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "9"]
+[White "Scholar"]
+[Black "Beginner"]
+[Result "1-0"]
+[ECO "C23"]
+[Annotator "chessflow"]
+1. e4 e5 2. Bc4 Nc6 3. d3 Bc5 4. Qh5 d6 5. Qxf7# {
+Scholar's Mate - White plays a quiet d3 first to feign a slow Italian Game, only to suddenly strike with the Queen.
+} 1-0
+
+[Event "Scholar's Mate (Black's Retaliation)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "10"]
+[White "Beginner"]
+[Black "Scholar"]
+[Result "0-1"]
+[ECO "A00"]
+[Annotator "chessflow"]
+1. d3 e5 2. e3 Bc5 3. a3 Qf6 4. h3 Qxf2# {
+Scholar's Mate - A mirror version where Black utilizes the same exact pattern against a passive White opening.
+} 0-1
+
+[Event "Légal's Mate (Classic)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "11"]
+[White "De Legal"]
+[Black "Saint Brie"]
+[Result "1-0"]
+[ECO "C40"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 d6 3. Bc4 Bg4 4. Nc3 g6 5. Nxe5 Bxd1 6. Bxf7+ Ke7 7. Nd5# {
+Légal's Mate - A famous queen sacrifice trap from 1750. Black greedily takes the queen, only to be mated by the minor pieces.
+} 1-0
+
+[Event "Légal's Mate (Italian Variation)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "12"]
+[White "Trappist"]
+[Black "Victim"]
+[Result "1-0"]
+[ECO "C50"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nc6 3. Bc4 d6 4. Nc3 Bg4 5. h3 Bh5 6. Nxe5 Bxd1 7. Bxf7+ Ke7 8. Nd5# {
+Légal's Mate - Applied in the Italian Game. White kicks the bishop with h3 to force a decision before executing the stunning Queen sacrifice.
+} 1-0
+
+[Event "Légal's Mate (Philidor Variation)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "13"]
+[White "Trappist"]
+[Black "Victim"]
+[Result "1-0"]
+[ECO "C41"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 d6 3. Bc4 h6 4. Nc3 Bg4 5. Nxe5 Bxd1 6. Bxf7+ Ke7 7. Nd5# {
+Légal's Mate - The trap works beautifully against the Philidor Defense if Black wastes a tempo on h6.
+} 1-0
+
+[Event "Légal's Mate (Four Knights Variation)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "14"]
+[White "Trappist"]
+[Black "Victim"]
+[Result "1-0"]
+[ECO "C42"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nc6 3. Nc3 d6 4. Bc4 Bg4 5. Nxe5 Bxd1 6. Bxf7+ Ke7 7. Nd5# {
+Légal's Mate - Black plays passively in the Four Knights structure, allowing the exact same devastating combination.
+} 1-0
+
+[Event "Légal's Mate (Kieseritzky Variation)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "15"]
+[White "Trappist"]
+[Black "Victim"]
+[Result "1-0"]
+[ECO "C50"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nc6 3. Bc4 d6 4. Nc3 a6 5. a4 Bg4 6. h3 Bh5 7. Nxe5 Bxd1 8. Bxf7+ Ke7 9. Nd5# {
+Légal's Mate - Black attempts to stop Nb5 with a6, completely missing the primary threat in the center.
+} 1-0
+
+[Event "Stafford Gambit Mate (Main Line)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "16"]
+[White "Greedy Player"]
+[Black "Trappist"]
+[Result "0-1"]
+[ECO "C42"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nf6 3. Nxe5 Nc6 4. Nxc6 dxc6 5. d3 Bc5 6. Bg5 Nxe4 7. Bxd8 Bxf2+ 8. Ke2 Bg4# {
+Stafford Gambit Mate - An incredibly sharp and deadly modern opening trap mirroring the Légal's Mate pattern for Black.
+} 0-1
+
+[Event "Stafford Gambit Mate (e5 Push)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "17"]
+[White "Greedy Player"]
+[Black "Trappist"]
+[Result "0-1"]
+[ECO "C42"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nf6 3. Nxe5 Nc6 4. Nxc6 dxc6 5. e5 Ne4 6. d3 Bc5 7. dxe4 Bxf2+ 8. Ke2 Bg4# {
+Stafford Gambit Mate - White pushes e5 to challenge the knight, but Black sacrifices the knight anyway to open the deadly diagonal.
+} 0-1
+
+[Event "Blackburne Shilling Mate (Main Line)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "18"]
+[White "Beginner"]
+[Black "Blackburne"]
+[Result "0-1"]
+[ECO "C50"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nc6 3. Bc4 Nd4 4. Nxe5 Qg5 5. Nxf7 Qxg2 6. Rf1 Qxe4+ 7. Be2 Nf3# {
+Blackburne Shilling Gambit - White goes hunting for the rook fork on f7, but walks right into a beautiful smothered mate.
+} 0-1
+
+[Event "Blackburne Shilling Mate (Smothered Rook Variation)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "19"]
+[White "Beginner"]
+[Black "Trappist"]
+[Result "0-1"]
+[ECO "C50"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nc6 3. Bc4 Nd4 4. Nxe5 Qg5 5. Nxf7 Qxg2 6. Nxh8 Qxh1+ 7. Bf1 Qxe4+ 8. Be2 Nf3# {
+Blackburne Shilling Gambit - White greedily takes the rook on h8, leading to an even faster smothered execution.
+} 0-1
+
+[Event "Caro-Kann Smothered Mate (Main Line)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "20"]
+[White "Trappist"]
+[Black "Caro-Kann Player"]
+[Result "1-0"]
+[ECO "B10"]
+[Annotator "chessflow"]
+1. e4 c6 2. d4 d5 3. Nc3 dxe4 4. Nxe4 Nd7 5. Qe2 Ngf6 6. Nd6# {
+Caro-Kann Smothered Mate - The Black King gets entirely trapped by his own pieces in the center of the board because the e-pawn is pinned.
+} 1-0
+
+[Event "Caro-Kann Smothered Mate (Alekhine Trap)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "21"]
+[White "Trappist"]
+[Black "Caro-Kann Player"]
+[Result "1-0"]
+[ECO "B10"]
+[Annotator "chessflow"]
+1. e4 c6 2. d4 d5 3. Nd2 dxe4 4. Nxe4 Nd7 5. Bc4 Ngf6 6. Ng5 e6 7. Qe2 h6 8. Nxf7 Kxf7 9. Qxe6+ Kg6 10. Bd3+ Kh5 11. Qh3# {
+Caro-Kann Alekhine Trap - A gorgeous knight sacrifice on f7 rips the Black King out into the open for a forced mate.
+} 1-0
+
+[Event "Budapest Gambit Smothered Mate (Kieninger Trap)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "22"]
+[White "Greedy Player"]
+[Black "Trappist"]
+[Result "0-1"]
+[ECO "A51"]
+[Annotator "chessflow"]
+1. d4 Nf6 2. c4 e5 3. dxe5 Ng4 4. Bf4 Nc6 5. Nf3 Bb4+ 6. Nbd2 Qe7 7. a3 Ngxe5 8. axb4 Nd3# {
+Budapest Gambit (Kieninger Trap) - The e5 knight cannot be taken because the d2 pawn is pinned to the White King by the Black Queen.
+} 0-1
+
+[Event "Budapest Gambit Smothered Mate (Bishop Trap)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "23"]
+[White "Greedy Player"]
+[Black "Trappist"]
+[Result "0-1"]
+[ECO "A51"]
+[Annotator "chessflow"]
+1. d4 Nf6 2. c4 e5 3. d5 Bc5 4. Bg5 Ne4 5. Bxd8 Bxf2# {
+Budapest Gambit - White pins the knight, but Black completely ignores it, sacrificing the Queen for a devastating Bishop mate.
+} 0-1
+
+[Event "Englund Gambit Mate (Main Line)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "24"]
+[White "White"]
+[Black "Black"]
+[Result "0-1"]
+[ECO "A40"]
+[Annotator "chessflow"]
+1. d4 e5 2. dxe5 Nc6 3. Nf3 Qe7 4. Bf4 Qb4+ 5. Bd2 Qxb2 6. Bc3 Bb4 7. Qd2 Bxc3 8. Qxc3 Qc1# {
+Englund Gambit Trap - A disastrous sequence for White after trying to defend their b2 pawn with the Bishop, getting pinned and mated.
+} 0-1
+
+[Event "Siberian Trap Mate (Smith-Morra)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "25"]
+[White "White"]
+[Black "Black"]
+[Result "0-1"]
+[ECO "B21"]
+[Annotator "chessflow"]
+1. e4 c5 2. d4 cxd4 3. c3 dxc3 4. Nxc3 Nc6 5. Nf3 e6 6. Bc4 Qc7 7. O-O Nf6 8. Qe2 Ng4 9. h3 Nd4 10. Nxd4 Qh2# {
+Siberian Trap (Smith-Morra Gambit) - The Black Knight on d4 cannot be taken because it defends the mating square on h2.
+} 0-1
+
+[Event "Siberian Trap Mate (Extended Defense)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "26"]
+[White "White"]
+[Black "Black"]
+[Result "0-1"]
+[ECO "B21"]
+[Annotator "chessflow"]
+1. e4 c5 2. d4 cxd4 3. c3 dxc3 4. Nxc3 Nc6 5. Nf3 e6 6. Bc4 Qc7 7. O-O Nf6 8. h3 h5 9. Qe2 Ng4 10. Rd1 Bc5 11. Be3 Nd4 12. Nxd4 Qh2+ 13. Kf1 Qh1# {
+Siberian Trap - White attempts to create an escape square with Rd1, but Black's combination is simply too fast.
+} 0-1
+
+[Event "Fishing Pole Trap Mate (Ruy Lopez)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "27"]
+[White "White"]
+[Black "Black"]
+[Result "0-1"]
+[ECO "C65"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nc6 3. Bb5 Nf6 4. O-O Ng4 5. h3 h5 6. hxg4 hxg4 7. Ne1 Qh4 8. f3 g3 9. c3 Qh1# {
+Fishing Pole Trap (Ruy Lopez) - Black sacrifices a piece to violently open the h-file for the Queen and Rook.
+} 0-1
+
+[Event "Fishing Pole Trap Mate (Italian Game)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "28"]
+[White "White"]
+[Black "Black"]
+[Result "0-1"]
+[ECO "C50"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. O-O Ng4 5. h3 h5 6. hxg4 hxg4 7. Ne1 Qh4 8. f3 g3 9. c3 Qh1# {
+Fishing Pole Trap (Italian Game) - The exact same lethal concept works perfectly against the Italian Game structure.
+} 0-1
+
+[Event "Bird's Opening Trap Mate"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "29"]
+[White "White"]
+[Black "Black"]
+[Result "0-1"]
+[ECO "A02"]
+[Annotator "chessflow"]
+1. f4 e5 2. fxe5 d6 3. exd6 Bxd6 4. Nf3 g5 5. h3 Bg3# {
+Bird's Opening Trap (From Gambit) - White's f4 pawn push weakens the diagonal permanently, allowing a devastating Bishop mate.
+} 0-1
+
+[Event "Owen's Defense Trap Mate"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "30"]
+[White "White"]
+[Black "Black"]
+[Result "1-0"]
+[ECO "B00"]
+[Annotator "chessflow"]
+1. e4 b6 2. d4 Bb7 3. Bd3 f5 4. exf5 Bxg2 5. Qh5+ g6 6. fxg6 Nf6 7. gxh7+ Nxh5 8. Bg6# {
+Owen's Defense - A wild sequence where Black greedily hunts the rook on h1, completely ignoring the mating net on the Kingside.
+} 1-0
+
+[Event "Dutch Defense Korchnoi Trap"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "31"]
+[White "White"]
+[Black "Black"]
+[Result "1-0"]
+[ECO "A80"]
+[Annotator "chessflow"]
+1. d4 f5 2. h3 Nf6 3. g4 fxg4 4. hxg4 Nxg4 5. Qd3 Nf6 6. Rxh7 Rxh7 7. Qg6# {
+Dutch Defense - A beautiful Rook sacrifice to remove the defending pawn, immediately followed by Queen mate.
+} 1-0
+
+[Event "Dutch Defense Fool's Mate"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "32"]
+[White "White"]
+[Black "Black"]
+[Result "1-0"]
+[ECO "A80"]
+[Annotator "chessflow"]
+1. d4 f5 2. Bg5 h6 3. Bh4 g5 4. e3 gxh4 5. Qh5# {
+Dutch Defense - Black over-extends with pawns to chase the Bishop, opening the fatal e8-h5 diagonal.
+} 1-0
+
+[Event "Opera Mate (Morphy's Immortal)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "1858.??.??"]
+[Round "33"]
+[White "Paul Morphy"]
+[Black "Duke Karl"]
+[Result "1-0"]
+[ECO "C41"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 d6 3. d4 Bg4 4. dxe5 Bxf3 5. Qxf3 dxe5 6. Bc4 Nf6 7. Qb3 Qe7 8. Nc3 c6 9. Bg5 b5 10. Nxb5 cxb5 11. Bxb5+ Nbd7 12. O-O-O Rd8 13. Rxd7 Rxd7 14. Rd1 Qe6 15. Bxd7+ Nxd7 16. Qb8+ Nxb8 17. Rd8# {
+Opera Mate - The most famous game in chess history. Morphy sacrifices his Queen to deliver a stunning back-rank mate.
+} 1-0
+
+[Event "Boden's Mate (Schulder-Boden)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "1853.??.??"]
+[Round "34"]
+[White "Schulder"]
+[Black "Boden"]
+[Result "0-1"]
+[ECO "C41"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 d6 3. c3 f5 4. Bc4 Nf6 5. d4 fxe4 6. dxe5 exf3 7. exf6 Qxf6 8. gxf3 Nc6 9. f4 Bd7 10. Be3 O-O-O 11. Nd2 Re8 12. Qf3 Bf5 13. O-O-O d5 14. Bxd5 Qxc3+ 15. bxc3 Ba3# {
+Boden's Mate - The original performance of the 'Criss-Cross' Bishop mate, preceded by a gorgeous Queen sacrifice.
+} 0-1
+
+[Event "Reti's Mate"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "1910.??.??"]
+[Round "35"]
+[White "Richard Reti"]
+[Black "Savielly Tartakower"]
+[Result "1-0"]
+[ECO "B15"]
+[Annotator "chessflow"]
+1. e4 c6 2. d4 d5 3. Nc3 dxe4 4. Nxe4 Nf6 5. Qd3 e5 6. dxe5 Qa5+ 7. Bd2 Qxe5 8. O-O-O Nxe4 9. Qd8+ Kxd8 10. Bg5+ Kc7 11. Bd8# {
+Reti's Mate - An iconic double-check leading to a beautiful mate where the Bishop delivers the final blow.
+} 1-0
+
+[Event "Damiano's Defense Trap"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "36"]
+[White "White"]
+[Black "Black"]
+[Result "1-0"]
+[ECO "C40"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 f6 3. Nxe5 fxe5 4. Qh5+ Ke7 5. Qxe5+ Kf7 6. Bc4+ Kg6 7. Qf5+ Kh6 8. d4+ g5 9. h4 d5 10. hxg5+ Kg7 11. Qe5+ Kf7 12. Bxd5+ Kg6 13. Qxh8 Nf6 14. gxf6 Bb4+ 15. c3 Qxh8 16. Rh6# {
+Damiano's Defense Trap - An incredibly deep, forcing line against the terrible 2... f6 defense, ending in a beautiful rook mate.
+} 1-0
+
+[Event "Damiano's Mate (Pure Pattern)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "37"]
+[White "White"]
+[Black "Black"]
+[Result "1-0"]
+[ECO "C42"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nf6 3. Nxe5 Nxe4 4. Qe2 d5 5. d3 f6 6. Qh5+ g6 7. Nxg6 hxg6 8. Qxh8 Qe7 9. dxe4 Qxe4+ 10. Be2 Qxg2 11. Rf1 Nd7 12. Bh6 b6 13. Bb5 Qe4+ 14. Kd2 Qb4+ 15. Nc3 d4 16. Rae1+ Kf7 17. Qh7+ Bg7 18. Qxg7# {
+Damiano's Mate - A Queen mate protected by a pawn on the 7th rank, forced through an aggressive opening sequence.
+} 1-0
+
+[Event "Greco's Mate (Classic Sacrifice)"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "1620.??.??"]
+[Round "38"]
+[White "Gioachino Greco"]
+[Black "NN"]
+[Result "1-0"]
+[ECO "C50"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. c3 Qe7 5. O-O d6 6. d4 Bb6 7. Bg5 f6 8. Bh4 g5 9. Nxg5 fxg5 10. Qh5+ Kd7 11. Bxg5 Qg7 12. Bf7 h6 13. Qh3# {
+Greco's Mate - A brilliant 17th-century miniature where the Bishop cuts off the King's escape while the Queen delivers mate.
+} 1-0
+
+[Event "Italian Game Smothered Trap"]
+[Site "Comprehensive Chess Mates Study PGN v4.0"]
+[Date "2026.03.11"]
+[Round "39"]
+[White "White"]
+[Black "Black"]
+[Result "1-0"]
+[ECO "C50"]
+[Annotator "chessflow"]
+1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. c3 Nf6 5. d4 exd4 6. cxd4 Bb4+ 7. Nc3 Nxe4 8. O-O Nxc3 9. bxc3 Bxc3 10. Qb3 Bxa1 11. Bxf7+ Kf8 12. Bg5 Ne7 13. Ne5 Bxd4 14. Bg6 d5 15. Qf3+ Bf5 16. Bxf5 Bxe5 17. Be6+ Bf6 18. Bxf6 gxf6 19. Qxf6+ Ke8 20. Qf7# {
+Italian Game (Giuoco Piano) Trap - White sacrifices massive material, including a Rook, to weave an inescapable mating net around the Black King.
+} 1-0

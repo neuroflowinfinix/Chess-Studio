@@ -1,0 +1,1 @@
+For adding engines to the application, put the .exe (compatible version) into engines/ and the respective nnue with same name as the engine .exe file into engines/nnue/

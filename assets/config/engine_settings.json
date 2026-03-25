@@ -1,0 +1,10 @@
+{
+  "engine_name": "Rubi Chess.exe",
+  "engine_path": "engines\\Rubi Chess.exe",
+  "depth": 20,
+  "threads": 4,
+  "hash_size": 512,
+  "multi_pv": 3,
+  "use_cloud": true,
+  "timestamp": "2026-03-24 12:10:34"
+}
