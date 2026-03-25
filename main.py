@@ -1486,7 +1486,6 @@ class ChessApp:
                 
                 # --- NEW: Check Tablebase if 7 or fewer pieces remain ---
                 if len(self.board.piece_map()) <= 7:
-                    import threading
                     threading.Thread(
                         target=lambda: setattr(self, 'tb_data', self.tablebase.get_evaluation(self.board)), 
                         daemon=True
