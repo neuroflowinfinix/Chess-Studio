@@ -15,6 +15,11 @@ class UIRenderer:
         self.vis_eval = 0.0  # Stores the current "visual" height for smoothing
         self.eval_log = []
         
+        # Performance optimization: cached surfaces
+        self.cached_text_surfaces = {}
+        self.last_board_fen = None
+        self.needs_full_redraw = True
+        
     def draw_eval_bar(self, x, y, w, h):
         """
         Ultimate Evaluation Bar using NNUE Win-Probability (WDL) and Spring Physics.
@@ -24,30 +29,29 @@ class UIRenderer:
         
         # 1. GET ENGINE EVALUATION
         target_eval = getattr(self.app, 'eval_val', 0.0)
-        if target_eval is None: target_eval = 0.0
-        
-        # --- NEW: TABLEBASE OVERRIDE ---
-        tb_data = getattr(self.app, 'tb_data', None)
-        tb_text = None
-        if tb_data and tb_data.get("dtz") is not None:
-            dtz = tb_data["dtz"]
-            if dtz == 0:
-                target_eval = 0.0
-                tb_text = "TB: Draw"
-            elif dtz > 0:
-                target_eval = 100.0 if getattr(self.app, 'playing_white', True) else -100.0
-                tb_text = f"TB: M{(abs(dtz) + 1) // 2}"
-            else:
-                target_eval = -100.0 if getattr(self.app, 'playing_white', True) else 100.0
-                tb_text = f"TB: -M{(abs(dtz) + 1) // 2}"
+        if target_eval is None:
+            target_eval = 0.0
 
-        # --- GOD-TIER UPGRADE: True Win Probability (WDL) Extraction ---
-        target_wdl_pct = getattr(self.app, 'eval_wdl', None)
-        if target_wdl_pct is not None:
-            target_wdl = target_wdl_pct / 100.0
+        current_depth = getattr(self.app, 'current_depth', 0)
+
+        # --- BULLETPROOF FIX + DEPTH STABILIZATION ---
+        if hasattr(self.app, 'board') and self.app.board.board_fen() == chess.STARTING_BOARD_FEN:
+            target_eval = 0.0
+            target_wdl = 0.5
+
+        elif getattr(self.app, 'is_analyzing', False) and current_depth < 5:
+            # Freeze eval only while engine is actively analyzing
+            target_eval = 0.0
+            target_wdl = 0.5
+
         else:
-            # Exact Stockfish WDL Formula fallback
-            target_wdl = 1.0 / (1.0 + math.exp(-0.00368208 * float(target_eval)))
+            # --- GOD-TIER UPGRADE: True Win Probability (WDL) Extraction ---
+            target_wdl_pct = getattr(self.app, 'eval_wdl', None)
+            if target_wdl_pct is not None:
+                target_wdl = target_wdl_pct / 100.0
+            else:
+                # Exact Stockfish WDL Formula fallback
+                target_wdl = 1.0 / (1.0 + math.exp(-0.00368208 * float(target_eval)))
 
         # Forced mates override the probability curve
         if target_eval > 5000: target_wdl = 1.0
@@ -129,7 +133,14 @@ class UIRenderer:
 
         # 7. DRAW TEXT (Retained: Centipawn or Mate)
         font = self.app.font_s
-        txt_str = getattr(self.app, 'real_time_score', "0.00")
+        current_depth = getattr(self.app, 'current_depth', 0)
+
+        if hasattr(self.app, 'board') and self.app.board.board_fen() == chess.STARTING_BOARD_FEN:
+            txt_str = "0.00"
+        elif getattr(self.app, 'is_analyzing', False) and current_depth < 5:
+            txt_str = "0.00"
+        else:
+            txt_str = getattr(self.app, 'real_time_score', "0.00")
         txt_surf = font.render(txt_str, True, (220, 220, 220))
         txt_x = bar_x - 8 - txt_surf.get_width()
         txt_y = bar_y + (bar_h - txt_surf.get_height()) // 2
@@ -276,12 +287,16 @@ class UIRenderer:
                 'book': (150, 150, 150)
             }
             
-            category = msg.get('category', 'book')
+            if isinstance(msg, dict):
+                category = msg.get('category', 'book')
+                move_text = msg.get('move', '')
+                commentary = msg.get('commentary', '')
+            else:
+                category = 'book'
+                move_text = ''
+                commentary = str(msg)
+                
             color = category_colors.get(category, (150, 150, 150))
-            
-            # Move and commentary
-            move_text = msg.get('move', '')
-            commentary = msg.get('commentary', '')
             
             if move_text:
                 move_surf = chat_font.render(f"{move_text}:", True, color)
@@ -318,7 +333,8 @@ class UIRenderer:
         self.scaled = {}
         for k, img in self.assets.pieces.items():
             s = min(t/img.get_width(), t/img.get_height())
-            self.scaled[k] = pygame.transform.smoothscale(img, (int(img.get_width()*s), int(img.get_height()*s)))
+            scaled_img = pygame.transform.smoothscale(img, (int(img.get_width()*s), int(img.get_height()*s)))
+            self.scaled[k] = scaled_img.convert_alpha()  # Pre-convert for performance
 
     def draw_board(self):
         # Ensure scaling is correct
@@ -327,49 +343,77 @@ class UIRenderer:
         ox, oy, sq_sz = self.app.bd_x, self.app.bd_y, self.app.sq_sz
         cols = THEME[self.app.board_style]
         
-        # 1. Background
-        for r in range(8):
-            for c in range(8):
-                dr = r if not self.app.playing_white else (7-r)
-                dc = (7-c) if not self.app.playing_white else c
-                c_sq = cols["light"] if (r+c)%2==0 else cols["dark"]
-                pygame.draw.rect(self.screen, c_sq, (ox+c*sq_sz, oy+r*sq_sz, sq_sz, sq_sz))
+        # Create a copy of the board for game state checks
+        with self.app.lock:
+            tmp = self.app.board.copy()
         
-        # 2. Highlights (Last Move)
-        if self.app.view_ply > 0 and len(self.app.history) >= self.app.view_ply:
-            l = self.app.history[self.app.view_ply-1]["move"]
-            self.hl_sq(l.from_square, cols["highlight"])
-            self.hl_sq(l.to_square, cols["highlight"])
+        # Check if board state changed for dirty rect optimization
+        current_fen = self.app.board.fen()
+        current_view_ply = self.app.view_ply
 
-        # 3. Threat Arrow
-        # Draw threat arrow only if enabled and set
-        if self.app.show_threats and self.app.threat_arrow:
-            try:
-                # --- FIX: Changed from old Red to the beautiful transparent Engine Blue! ---
-                self.draw_arrow(chess.Move(self.app.threat_arrow[0], self.app.threat_arrow[1]), (30, 160, 240, 150))
-            except Exception:
-                pass
+        # --- FIX: Also check if we just picked up or dropped a piece ---
+        current_drag_sq = self.app.dragging_piece[1] if self.app.dragging_piece else None
 
+        board_changed = current_fen != self.last_board_fen
+        drag_changed = current_drag_sq != getattr(self, 'last_drag_sq', None)
+        # view_ply navigation never changes board.fen(), so track it separately
+        view_ply_changed = current_view_ply != getattr(self, 'last_view_ply_cache', None)
+
+        # Invalidate the static cache if a move was made, drag changed, or user navigated history
+        if board_changed or drag_changed or view_ply_changed or not self.app.static_board_surface:
+            self._create_static_layers()
+            self.last_board_fen = current_fen
+            self.last_drag_sq = current_drag_sq
+            self.last_view_ply_cache = current_view_ply
+        
+        # Draw static board surface
+        if self.app.static_board_surface:
+            self.screen.blit(self.app.static_board_surface, (ox, oy))
+        
+        if self.app.static_pieces_surface:
+            self.screen.blit(self.app.static_pieces_surface, (ox, oy))
+        
         # --- PRE-CALCULATE DRAG STATE ---
+        # A drag is "active" (piece floating at cursor) whenever dragging_piece is set
+        # AND the left mouse button is still physically held down.
+        # Using get_pressed() here is the correct guard: the moment the button is released,
+        # is_dragging_active goes False, which stops the ghost from being rendered on the
+        # very next frame BEFORE handle_click("up") has had a chance to clear dragging_piece.
         is_dragging_active = False
-        if self.app.dragging_piece:
-            p, from_sq = self.app.dragging_piece
-            sx, sy = self.get_sq_coords(from_sq)
-            sq_rect = pygame.Rect(sx, sy, sq_sz, sq_sz)
-            mx, my = pygame.mouse.get_pos()
-            if not sq_rect.collidepoint(mx, my):
-                is_dragging_active = True
+        if self.app.dragging_piece and pygame.mouse.get_pressed()[0]:
+            is_dragging_active = True
+            self.app.animation_active = True
+        elif not self.app.dragging_piece:
+            self.app.animation_active = False
+
+        # --- PRE-MOVE HIGHLIGHT (all queued premoves, no arrow) ---
+        _pm_queue = getattr(self.app, 'pre_move_queue', None) or []
+        if _pm_queue:
+            _pm_alpha = {}
+            for _pm_entry in _pm_queue:
+                for _pm_sq in [_pm_entry[0], _pm_entry[1]]:
+                    _pm_alpha[_pm_sq] = min(200, _pm_alpha.get(_pm_sq, 0) + 80)
+            for _pm_sq, _alpha in _pm_alpha.items():
+                _f2 = chess.square_file(_pm_sq)
+                _r2 = chess.square_rank(_pm_sq)
+                if self.app.playing_white: _r2 = 7 - _r2
+                else: _f2 = 7 - _f2
+                _ps = pygame.Surface((sq_sz, sq_sz), pygame.SRCALPHA)
+                _ps.fill((70, 110, 220, _alpha))
+                self.screen.blit(_ps, (ox + _f2 * sq_sz, oy + _r2 * sq_sz))
 
         # --- DRAW VALID MOVES (Transparent & Behind Pieces) ---
         if self.app.selected is not None:
             if not is_dragging_active:
-                self.hl_sq(self.app.selected, cols["select"])
+                yellow_hl = (255, 255, 153, 120)
+                self.hl_sq(self.app.selected, yellow_hl)
             dot_surface = pygame.Surface((sq_sz, sq_sz), pygame.SRCALPHA)
             pygame.draw.circle(dot_surface, (100, 100, 100, 128), (sq_sz//2, sq_sz//2), sq_sz//7)
             for m in self.app.valid_moves:
                 fx = (7-chess.square_file(m.to_square)) if not self.app.playing_white else chess.square_file(m.to_square)
                 fy = chess.square_rank(m.to_square) if not self.app.playing_white else (7-chess.square_rank(m.to_square))
-                self.screen.blit(dot_surface, (ox + fx*sq_sz, oy + fy*sq_sz))
+                dot_rect = pygame.Rect(ox + fx*sq_sz, oy + fy*sq_sz, sq_sz, sq_sz)
+                self.screen.blit(dot_surface, dot_rect)
 
         # 3.5 Arrows (Hints & User) - DRAWN FIRST SO THEY SLIDE BEHIND PIECES
         if self.app.show_hints:
@@ -392,28 +436,20 @@ class UIRenderer:
         if self.app.trainer_hint_arrow:
             self.draw_dashed_arrow(self.app.trainer_hint_arrow, THEME["trainer_arrow"])
 
-        # 4. Pieces
-        # --- FIX: Securely lock the board before copying it to prevent crash ---
-        with self.app.lock:
-            tmp = self.app.board.copy()
-            
-        while tmp.ply() > self.app.view_ply:
-            if not tmp.move_stack: break  # <--- SAFETY CHECK
-            tmp.pop()
-        
-        for s in chess.SQUARES:
-            if is_dragging_active and self.app.dragging_piece and self.app.dragging_piece[1] == s: continue
-            p = tmp.piece_at(s)
-            if p: self.draw_piece(p, s)
-
-        # 5. Dragged Piece (On Top)
+        # 5. Dragged Piece (On Top) - Use FRect for smooth movement
         if is_dragging_active and self.app.dragging_piece:
             p = self.app.dragging_piece[0]
             k = self.get_piece_key(p)
             if k in self.scaled:
                 img = self.scaled[k]
                 mx, my = pygame.mouse.get_pos()
-                self.screen.blit(img, (mx - sq_sz//2, my - sq_sz//2))
+                # Update FRect position for smooth sub-pixel movement
+                self.app.drag_pos_frect.x = mx - sq_sz/2
+                self.app.drag_pos_frect.y = my - sq_sz/2
+                
+                # By passing the float attributes directly, Pygame-CE natively handles 
+                # the sub-pixel positioning for perfectly smooth 144hz tracking
+                self.screen.blit(img, (self.app.drag_pos_frect.x, self.app.drag_pos_frect.y))
                 
         # --- NEW: Draw the Perfect Eval Bar ---
         # Adjust these numbers (x, y, w, h) to fit your specific layout!
@@ -619,8 +655,78 @@ class UIRenderer:
                         bubble_surf.blit(txt_surf, (pad_x, pad_y))
                         self.screen.blit(bubble_surf, (bubble_x, bubble_y))
 
+    def _create_static_layers(self):
+        """Create static board and pieces surfaces for dirty rect optimization"""
+        ox, oy, sq_sz = self.app.bd_x, self.app.bd_y, self.app.sq_sz
+        cols = THEME[self.app.board_style]
+        
+        # Create static board surface
+        self.app.static_board_surface = pygame.Surface((sq_sz * 8, sq_sz * 8))
+        self.app.static_board_surface.convert()  # Optimize for display
+        
+        # Draw board squares
+        for r in range(8):
+            for c in range(8):
+                dr = r if not self.app.playing_white else (7-r)
+                dc = (7-c) if not self.app.playing_white else c
+                c_sq = cols["light"] if (r+c)%2==0 else cols["dark"]
+                pygame.draw.rect(self.app.static_board_surface, c_sq, (c*sq_sz, r*sq_sz, sq_sz, sq_sz))
+        
+        # Create static pieces surface
+        self.app.static_pieces_surface = pygame.Surface((sq_sz * 8, sq_sz * 8), pygame.SRCALPHA)
+        self.app.static_pieces_surface.convert_alpha()
+        
+        # Draw last move highlights
+        if self.app.view_ply > 0 and len(self.app.history) >= self.app.view_ply:
+            step = self.app.history[self.app.view_ply-1]
+            if isinstance(step, dict) and "move" in step:
+                m = step["move"]
+                # --- FIX: Override theme with Faint Light Yellow ---
+                yellow_hl = (255, 255, 153, 120)
+                self._hl_sq_static(m.from_square, yellow_hl)
+                self._hl_sq_static(m.to_square, yellow_hl)
+        
+        # Draw threat arrow if enabled
+        if self.app.show_threats and getattr(self.app, 'threat_arrow', None):
+            try:
+                m = chess.Move(self.app.threat_arrow[0], self.app.threat_arrow[1])
+                self.draw_arrow(m, (30, 160, 240, 150), target_surface=self.app.static_pieces_surface)
+            except Exception:
+                pass
+        
+        # Draw static pieces
+        with self.app.lock:
+            tmp = self.app.board.copy()
+        
+        while tmp.ply() > self.app.view_ply:
+            if not tmp.move_stack: break
+            tmp.pop()
+        
+        for s in chess.SQUARES:
+            # Skip the dragged piece's origin square while button is held.
+            # Once the button is released, dragging_piece may still be set for one frame
+            # before handle_click clears it — so also check get_pressed() here to avoid
+            # baking a ghost into the static surface prematurely.
+            if self.app.dragging_piece and pygame.mouse.get_pressed()[0] and self.app.dragging_piece[1] == s:
+                continue
+            p = tmp.piece_at(s)
+            if p:
+                self._draw_piece_static(p, s)
+    
+    def _hl_sq_static(self, sq, col):
+        """Highlight square on static surface"""
+        f = chess.square_file(sq)
+        r = chess.square_rank(sq)
+        if self.app.playing_white: r = 7 - r
+        else: f = 7 - f
+        x = f * self.app.sq_sz
+        y = r * self.app.sq_sz
+        s = pygame.Surface((self.app.sq_sz, self.app.sq_sz), pygame.SRCALPHA)
+        s.fill(col)
+        self.app.static_board_surface.blit(s, (x, y))
+
     def hl_sq(self, sq, col):
-        """Highlights a specific square on the board with a semi-transparent color."""
+        """Dynamically highlight a square on the active screen"""
         f = chess.square_file(sq)
         r = chess.square_rank(sq)
         if self.app.playing_white: r = 7 - r
@@ -630,90 +736,21 @@ class UIRenderer:
         s = pygame.Surface((self.app.sq_sz, self.app.sq_sz), pygame.SRCALPHA)
         s.fill(col)
         self.screen.blit(s, (x, y))
-
-    def hl_sq_arrow(self, start, end, col):
-        """Draws a highlighted square arrow, detects and curves knight moves."""
-        if start == end: return
-        
-        # 1. Standard square to screen conversion parameters
-        sq_sz = self.app.sq_sz
-        bd_x = self.app.bd_x
-        bd_y = self.app.bd_y
-        
-        # Standard Arrow Thickness
-        w_arrow = int(sq_sz * 0.15)
-        
-        # 2. Get standard (non-flipped) file/rank (0-7)
-        f1 = chess.square_file(start)
-        r1 = chess.square_rank(start)
-        f2 = chess.square_file(end)
-        r2 = chess.square_rank(end)
-        
-        # 3. Handle Board Flip directly in a helper function
-        def to_screen_coords(f, r):
-            if self.app.playing_white: r = 7 - r
-            else: f = 7 - f
-            return (bd_x + f * sq_sz + sq_sz // 2, bd_y + r * sq_sz + sq_sz // 2)
-
-        p1 = to_screen_coords(f1, r1) # Start square center
-        p2 = to_screen_coords(f2, r2) # End square center
-        
-        # 4. Detect Knight Move (±2 in one direction, ±1 in other)
-        df = abs(f1 - f2)
-        dr = abs(r1 - r2)
-        is_knight_move = (df == 1 and dr == 2) or (df == 2 and dr == 1)
-        
-        if is_knight_move:
-            # --- CURVED KNIGHT ARROW (Quadratic Bézier Curve) ---
-            
-            # Consistent L-shape logic: move 2 squares in primary direction, then 1 side.
-            if dr > df: # Primary direction is Vertical
-                fc, rc = f1, r2 # Corner is on start's file, end's rank
-            else: # Primary direction is Horizontal
-                fc, rc = f2, r1 # Corner is on end's file, start's rank
-            
-            cp = to_screen_coords(fc, rc) # Control Point (CP) center
-            
-            # Generate points for quadratic Bézier: B(t) = (1-t)^2*P1 + 2*(1-t)*t*CP + t^2*P2
-            N = 15 # Number of segments for smoothness
-            points = []
-            for i in range(N + 1):
-                t = i / N
-                b_x = (1-t)**2 * p1[0] + 2*(1-t)*t * cp[0] + t**2 * p2[0]
-                b_y = (1-t)**2 * p1[1] + 2*(1-t)*t * cp[1] + t**2 * p2[1]
-                points.append((b_x, b_y))
-            
-            # Draw multiple line segments for the curve using user's color
-            for i in range(len(points) - 1):
-                pygame.draw.line(self.screen, col, points[i], points[i+1], w_arrow)
-            
-            # Draw Tangent Arrowhead at P2 (based on vector from CP to P2 at t=1)
-            ex, ey = p2
-            cx, cy = cp
-            angle = math.atan2(ey - cy, ex - cx)
-            head_sz = int(sq_sz * 0.45)
-            
-            h1 = (ex - head_sz * math.cos(angle - math.pi/7), ey - head_sz * math.sin(angle - math.pi/7))
-            h2 = (ex - head_sz * math.cos(angle + math.pi/7), ey - head_sz * math.sin(angle + math.pi/7))
-            
-            pygame.draw.polygon(self.screen, col, [p2, h1, h2])
-            
-        else:
-            # --- STANDARD STRAIGHT ARROW (Reusing P1, P2) ---
-            sx, sy = p1
-            ex, ey = p2
-            
-            # Straight Line in user's color
-            pygame.draw.line(self.screen, col, (sx, sy), (ex, ey), w_arrow)
-            
-            # Standard Arrow Head
-            angle = math.atan2(ey - sy, ex - sx)
-            head_sz = int(sq_sz * 0.45)
-            
-            h1 = (ex - head_sz * math.cos(angle - math.pi/7), ey - head_sz * math.sin(angle - math.pi/7))
-            h2 = (ex - head_sz * math.cos(angle + math.pi/7), ey - head_sz * math.sin(angle + math.pi/7))
-            
-            pygame.draw.polygon(self.screen, col, [(ex, ey), h1, h2])
+    
+    def _draw_piece_static(self, p, sq):
+        """Draw piece on static surface"""
+        if p is None: return 
+        sz = self.app.sq_sz
+        f = chess.square_file(sq); r = chess.square_rank(sq)
+        if self.app.playing_white: r = 7 - r
+        else: f = 7 - f
+        x, y = f*sz, r*sz
+        try:
+            k = ('w' if p.color else 'b') + p.symbol().lower()
+            if k in self.scaled:
+                img = self.scaled[k]
+                self.app.static_pieces_surface.blit(img, (x+(sz-img.get_width())//2, y+(sz-img.get_height())//2))
+        except: pass
 
     def draw_piece(self, p, sq):
         if p is None: return 
@@ -729,13 +766,13 @@ class UIRenderer:
                 self.screen.blit(img, (x+(sz-img.get_width())//2, y+(sz-img.get_height())//2))
         except: pass
 
-    def draw_arrow(self, m, col):
-        self._render_arrow_geometry(m, col, is_dashed=False)
+    def draw_arrow(self, m, col, target_surface=None):
+        self._render_arrow_geometry(m, col, is_dashed=False, target_surface=target_surface)
         
-    def draw_dashed_arrow(self, m, col):
-        self._render_arrow_geometry(m, col, is_dashed=True)
+    def draw_dashed_arrow(self, m, col, target_surface=None):
+        self._render_arrow_geometry(m, col, is_dashed=True, target_surface=target_surface)
 
-    def _render_arrow_geometry(self, m, col, is_dashed):
+    def _render_arrow_geometry(self, m, col, is_dashed, target_surface=None):
         """Draws arrow geometry, handling both straight and multi-segment knight paths."""
         sz = self.app.sq_sz; ox, oy = self.app.bd_x, self.app.bd_y
         s, e = m.from_square, m.to_square
@@ -885,7 +922,9 @@ class UIRenderer:
                     rot.append((x * c - y * s_sin + sx, x * s_sin + y * c + sy))
                 pygame.draw.polygon(surf, col, rot)
                 
-        self.screen.blit(surf, (0,0))
+        # Draw to the requested surface, or fallback to the main screen
+        target = target_surface if target_surface else self.screen
+        target.blit(surf, (0,0))
 
     def get_sq_coords(self, sq):
         f = chess.square_file(sq); r = chess.square_rank(sq)
@@ -1058,8 +1097,10 @@ class UIRenderer:
         status_color = THEME["text_dim"]
         if "Completed" in self.app.status_msg: status_color = (20, 160, 20)
         
-        sub = self.app.status_msg 
-        self.screen.blit(self.app.font_m.render(sub, True, status_color), (x + 110, y + 50))
+        parts = self.app.status_msg.split(". Date:", 1)
+        self.screen.blit(self.app.font_m.render(parts[0], True, status_color), (x + 110, y + 50))
+        if len(parts) > 1:
+            self.screen.blit(self.app.font_m.render("Date: " + parts[1].strip(), True, status_color), (x + 110, y + 68))
         self.draw_btn(x + w - 95, y + 20, "Change", "bot", width=80, font=self.app.font_s)
         y += panel_h + 10
 
@@ -1100,7 +1141,7 @@ class UIRenderer:
         display_log = list(self.app.chat_log)
         if 0 < self.app.view_ply <= len(self.app.history):
             item = self.app.history[self.app.view_ply-1]
-            if "review" in item and item["review"].get("bot_reason"):
+            if isinstance(item, dict) and "review" in item and isinstance(item["review"], dict) and item["review"].get("bot_reason"):
                 display_log.append({"sender": bot_name, "msg": "[Analysis] " + item["review"]["bot_reason"]})
 
         content_rect = pygame.Rect(x + 10, y + 45, w - 20, chat_h - 55)
@@ -1119,25 +1160,38 @@ class UIRenderer:
         self.screen.set_clip(None)
         y += chat_h + 10
 
-        # 3. OPENING (Dual Display)
+        # 3. OPENING (Dual Display & Text Wrapping)
         if self.app.mode in ["puzzle", "trainer"]:
             # Keep single display for specific modes
-            op_h = 50
+            op_title = "Mode Info:" if self.app.mode == "puzzle" else "Practice:"
+            
+            # Use dynamic text wrapping to prevent long names from spilling out
+            txt_h = self.draw_multiline_text(self.app.opening_name, self.app.font_m, THEME["text"], x + 15, y + 25, w - 20, draw=False)
+            op_h = max(50, 30 + txt_h)
+            
             self.panel(x, y, w, op_h)
-            self.screen.blit(self.app.font_s.render("Mode Info:" if self.app.mode == "puzzle" else "Practice:", True, THEME["text_dim"]), (x + 10, y + 5))
-            self.screen.blit(self.app.font_m.render(self.app.opening_name, True, THEME["text"]), (x + 15, y + 25))
+            self.screen.blit(self.app.font_s.render(op_title, True, THEME["text_dim"]), (x + 10, y + 5))
+            self.draw_multiline_text(self.app.opening_name, self.app.font_m, THEME["text"], x + 15, y + 25, w - 20, draw=True)
             y += op_h + 10
         else:
             # Dual display for Live and Review modes
-            op_h = 75
-            self.panel(x, y, w, op_h)
-            self.screen.blit(self.app.font_s.render("White:", True, THEME["text_dim"]), (x + 10, y + 8))
             w_name = getattr(self.app, 'white_opening', 'Starting Position')
-            self.screen.blit(self.app.font_m.render(w_name, True, THEME["text"]), (x + 60, y + 6))
-            
-            self.screen.blit(self.app.font_s.render("Black:", True, THEME["text_dim"]), (x + 10, y + 42))
             b_name = getattr(self.app, 'black_opening', 'Starting Position')
-            self.screen.blit(self.app.font_m.render(b_name, True, THEME["text"]), (x + 60, y + 40))
+            
+            # Calculate heights for both wrapped texts
+            w_h = self.draw_multiline_text(w_name, self.app.font_m, THEME["text"], x + 60, y + 6, w - 70, draw=False)
+            b_h = self.draw_multiline_text(b_name, self.app.font_m, THEME["text"], x + 60, y + max(40, 10 + w_h), w - 70, draw=False)
+            
+            op_h = max(75, 15 + w_h + b_h)
+            self.panel(x, y, w, op_h)
+            
+            self.screen.blit(self.app.font_s.render("White:", True, THEME["text_dim"]), (x + 10, y + 8))
+            self.draw_multiline_text(w_name, self.app.font_m, THEME["text"], x + 60, y + 6, w - 70, draw=True)
+            
+            b_y_start = y + max(40, 15 + w_h)
+            self.screen.blit(self.app.font_s.render("Black:", True, THEME["text_dim"]), (x + 10, b_y_start + 2))
+            self.draw_multiline_text(b_name, self.app.font_m, THEME["text"], x + 60, b_y_start, w - 70, draw=True)
+            
             y += op_h + 10
         
         # 4. ENGINE INFO
@@ -1228,20 +1282,52 @@ class UIRenderer:
             for i in range(self.app.view_ply):
                 step = self.app.history[i]
                 if "clock" in step and step["clock"] is not None:
-                    if step.get("ply", i+1) % 2 != 0: w_time = step["clock"]
-                    else: b_time = step["clock"]
-                    
+                    # --- FIX: Use the explicit 'color' key stored during import.
+                    # Older history items (pre-fix) fall back to ply-parity as a last resort.
+                    # The 'color' key is immune to Chess960/FEN-offset ply miscounts that
+                    # caused chess.com complete-games imports to show increasing timestamps. ---
+                    color = step.get("color")
+                    if color == "white":
+                        w_time = step["clock"]
+                    elif color == "black":
+                        b_time = step["clock"]
+                    else:
+                        # Legacy fallback for history items without 'color' key
+                        actual_ply = step.get("ply", i + 1)
+                        if actual_ply % 2 == 1:   # odd ply → White just moved
+                            w_time = step["clock"]
+                        else:                      # even ply → Black just moved
+                            b_time = step["clock"]
+
+            # --- FIX: Robust TimeControl fallback that handles every chess.com format ---
+            # Formats seen: "600", "600+5", "0:10:00", "1800+0", "1/40" (ignored), "-"
             if w_time is None or b_time is None:
+                base_secs = None
                 tc = getattr(self.app, 'pgn_headers', {}).get("TimeControl", "")
-                if tc and "+" in tc: tc = tc.split("+")[0]
-                if tc and tc.isdigit():
-                    if w_time is None: w_time = float(tc)
-                    if b_time is None: b_time = float(tc)
+                if tc and tc not in ("-", "?", ""):
+                    tc_base = tc.split("+")[0].strip()
+                    if tc_base.isdigit():
+                        base_secs = float(tc_base)
+                    elif ":" in tc_base:
+                        # H:MM:SS or MM:SS  (chess.com complete games uses "0:10:00")
+                        try:
+                            parts = [int(p) for p in tc_base.split(":")]
+                            if len(parts) == 3:
+                                base_secs = parts[0] * 3600 + parts[1] * 60 + parts[2]
+                            elif len(parts) == 2:
+                                base_secs = parts[0] * 60 + parts[1]
+                        except (ValueError, IndexError):
+                            pass
+                if base_secs is not None:
+                    if w_time is None: w_time = base_secs
+                    if b_time is None: b_time = base_secs
 
             if w_time is not None or b_time is not None:
                 def fmt(secs):
                     if secs is None: return "0:00"
-                    m = int(secs // 60); s = secs % 60
+                    total_s = max(0.0, float(secs))
+                    m = int(total_s // 60)
+                    s = total_s % 60
                     if s == int(s): return f"{m}:{int(s):02d}"
                     return f"{m}:{s:04.1f}"
 
@@ -1273,8 +1359,8 @@ class UIRenderer:
         self.panel(x, y, w, list_h)
         cx = x + 10
         self.screen.blit(self.app.font_s.render("#", True, (150,150,150)), (cx, y+5))
-        self.screen.blit(self.app.font_s.render("White", True, (150,150,150)), (cx+60, y+5))
-        self.screen.blit(self.app.font_s.render("Black", True, (150,150,150)), (cx+220, y+5))
+        self.screen.blit(self.app.font_s.render("White", True, (150,150,150)), (cx+55, y+5))
+        self.screen.blit(self.app.font_s.render("Black", True, (150,150,150)), (cx+280, y+5))
         
         clip = pygame.Rect(x, y+25, w, list_h-30)
         self.screen.set_clip(clip)
@@ -1299,7 +1385,11 @@ class UIRenderer:
                 if safe_view_ply == i + 1: pygame.draw.rect(self.screen, (255,255,200), wr)
                 
                 # --- FIX: Fallback to raw move text if "san" is missing from manual moves ---
-                w_san = w_data.get("san", str(w_data.get("move", "?")))
+                if isinstance(w_data, dict):
+                    w_san = w_data.get("san", str(w_data.get("move", "?")))
+                else:
+                    w_san = str(w_data)
+                    
                 self.screen.blit(self.app.font_m.render(w_san, True, (0,0,0)), (x+65, row_y+2))
                 self.app.move_click_zones.append((wr, i+1))
                 
@@ -1312,7 +1402,7 @@ class UIRenderer:
                 }
 
                 # --- WHITE MOVE MAPPING ---
-                if show_annot and "review" in w_data:
+                if show_annot and isinstance(w_data, dict) and "review" in w_data and isinstance(w_data["review"], dict):
                     ev_txt = w_data["review"].get("eval_str", "")
                     depth_val = w_data["review"].get("depth")
                     if ev_txt and depth_val is not None:
@@ -1340,15 +1430,19 @@ class UIRenderer:
                 # --- BLACK MOVE MAPPING ---
                 if (i+1) < len(safe_history): # FIX: Thread-safe reading using safe_history
                     b_data = safe_history[i+1]
-                    br = pygame.Rect(x+220, row_y, 130, 24)
+                    br = pygame.Rect(x+285, row_y, 130, 24)
                     if safe_view_ply == i + 2: pygame.draw.rect(self.screen, (255,255,200), br)
                     
                     # --- FIX: Fallback to raw move text if "san" is missing from manual moves ---
-                    b_san = b_data.get("san", str(b_data.get("move", "?")))
-                    self.screen.blit(self.app.font_m.render(b_san, True, (0,0,0)), (x+225, row_y+2))
+                    if isinstance(b_data, dict):
+                        b_san = b_data.get("san", str(b_data.get("move", "?")))
+                    else:
+                        b_san = str(b_data)
+                        
+                    self.screen.blit(self.app.font_m.render(b_san, True, (0,0,0)), (x+290, row_y+2))
                     self.app.move_click_zones.append((br, i+2))
                     
-                    if show_annot and "review" in b_data:
+                    if show_annot and isinstance(b_data, dict) and "review" in b_data and isinstance(b_data["review"], dict):
                         ev_txt = b_data["review"].get("eval_str", "")
                         depth_val = b_data["review"].get("depth")
                         if ev_txt and depth_val is not None:
@@ -1363,15 +1457,15 @@ class UIRenderer:
                             
                         # 1. Draw PNG Icon (Our App's format)
                         if icon_k and icon_k in self.assets.icons:
-                            self.screen.blit(pygame.transform.smoothscale(self.assets.icons[icon_k], (16,16)), (x+290, row_y+4))
+                            self.screen.blit(pygame.transform.smoothscale(self.assets.icons[icon_k], (16,16)), (x+355, row_y+4))
                         # 2. Draw Colored Text Symbol (External PGN format)
                         elif nag_sym:
                             sym_col = eval_color_map.get(nag_cls, (120, 120, 120))
-                            self.screen.blit(self.app.font_b.render(nag_sym, True, sym_col), (x+290, row_y+2))
+                            self.screen.blit(self.app.font_b.render(nag_sym, True, sym_col), (x+355, row_y+2))
                             
                         # 3. Draw standard Grey Evaluation Score
                         if ev_txt:
-                            self.screen.blit(self.app.font_s.render(ev_txt, True, (80,80,80)), (x+310, row_y+4))
+                            self.screen.blit(self.app.font_s.render(ev_txt, True, (80,80,80)), (x+375, row_y+4))
             row_y += 25
             
         # --- NEW: Engine MultiPV "Ghost" Moves for Mate Sequences ---
@@ -1405,7 +1499,7 @@ class UIRenderer:
                         if not any(m == m_san for m, c in moves_at_depth):
                             moves_at_depth.append((m_san, line_colors[line_idx % len(line_colors)]))
                 
-                col_x = x + 65 if is_white else x + 225
+                col_x = x + 65 if is_white else x + 290
                 
                 if row_y + 25 > clip.y and row_y < clip.bottom:
                     cx = col_x

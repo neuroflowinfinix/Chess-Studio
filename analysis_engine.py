@@ -2,9 +2,6 @@ import chess
 import chess.engine
 import chess.pgn
 import pygame
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.backends.backend_agg as agg
 import math
 import multiprocessing
 import random
@@ -13,11 +10,10 @@ import os
 import threading 
 import numpy as np
 import joblib
-import requests          # <-- NEW
-import chess.syzygy      # <-- NEW
 
-# Set Matplotlib to non-interactive mode to prevent main thread blocking
-matplotlib.use("Agg")
+matplotlib = None
+plt = None
+agg = None
 
 class AnalysisEngine:
     """
@@ -54,36 +50,38 @@ class AnalysisEngine:
         threading.Thread(target=self._merge_epd_openings, daemon=True).start()
         # ---------------------------------------------------------------------
         
-        # like pro chess softwares-style Win-Probability % Loss Thresholds (Refined for consistency)
+        # like chess.coms-style Win-Probability % Loss Thresholds (Refined for consistency)
         self.THRESHOLDS = {
             # Values are win% drops (larger = worse)
             "brilliant": 0.0, "great": 0.0, "best": 1.0, "excellent": 3.0, "good": 8.0,
             "inaccuracy": 20.0, "mistake": 40.0, "blunder": 100.0
         }
         # 'excellent' included above
-        # Centipawn thresholds tuned via Memetic Algorithm (God-Tier WDL Calibration)
         # Centipawn thresholds tuned perfectly via Calibration Engine
         self.CP_THRESHOLDS = {
-            'blunder': -694, 
-            'mistake': -613, 
-            'inaccuracy': -549, 
-            'good': 12, 
-            'excellent': 175, 
-            'best': 176, 
-            'great': 213, 
-            'brilliant': 244
+            'blunder': -829, 
+            'mistake': -686, 
+            'inaccuracy': -604, 
+            'good': 98, 
+            'excellent': 360, 
+            'best': 415, 
+            'great': 426, 
+            'brilliant': 828
         }
         
-        # Accuracy & Elo Multipliers derived from calibration
+        # Accuracy & Exponential Elo Multipliers derived from calibration
         self.CALIB_PARAMS = {
-            'acc_weight': 1.6083543829839095, 
-            'elo_base': 506, 
-            'elo_multiplier': 29.642357694117077,
-            # (Keep the missing WDL gap params safely defaulted for the Neural Net)
-            "gap_great": 167.5, 
-            "gap_brill": 518.6, 
-            "miss_win": 89.9, 
-            "miss_eq": 36.6
+            'acc_weight': 3.288162029807866, 
+            'm50': 127.2517,
+            'm60': 196.9384,
+            'm70': 95.8210,
+            'm80': 109.4327,
+            'm85': 0.0000,
+            'm90': 339.7956,
+            "gap_great": 167.57332759711528, 
+            "gap_brill": 518.6319984179141, 
+            "miss_win": 89.94399386453291, 
+            "miss_eq": 36.64302429397429
         }
         
         # Special Classification Constants (Synchronized with Neural Net Evolution)
@@ -92,7 +90,7 @@ class AnalysisEngine:
         self.GREAT_DIFF = self.CALIB_PARAMS["gap_great"]
         self.BRILLIANT_DIFF = self.CALIB_PARAMS["gap_brill"]
         
-        # Enhanced Sacrifice Detection Thresholds (Chess.com-style)
+        # Enhanced Sacrifice Detection Thresholds (chess.com-style)
         self.SACRIFICE_THRESHOLDS = {
             "material_sacrifice": -300,      # Centipawn loss for material
             "positional_compensation": 200,  # Required positional gain
@@ -448,40 +446,46 @@ class AnalysisEngine:
 
     def _estimate_elo_from_acpl(self, acpl, accuracy, base_rating=None):
         """
-        Dynamically calculates Elo. If base_rating is provided (e.g. from a PGN header),
-        it applies a Bayesian Prior to anchor the performance exactly like Chess.com.
+        Calculates Game Rating using an Exponential ACPL Logic. 
+        Punishes blunders heavily via ACPL, while rewarding precise play using 
+        the piecewise accuracy multipliers to match GM dataset expectations.
         """
         try:
             acc = float(accuracy)
-            base = self.CALIB_PARAMS.get("elo_base", 506)
-            mult = self.CALIB_PARAMS.get("elo_multiplier", 29.64)
+            acpl_val = max(1, float(acpl)) # Prevent division by zero
             
-            estimated_elo = base + ((acc - 50.0) * mult)
+            # 1. Base Elo calculation via Exponential Decay of ACPL
+            # Optimized via regression on 46 real player-game samples (RMSE: 1367 → 652)
+            exponential_base_elo = 8000.0 * math.exp(-0.061149 * acpl_val)
             
-            if acc > 85.0:
-                bonus_progress = acc - 85.0
-                estimated_elo += math.pow(bonus_progress, 2.15) * 5.0
-                
+            # 2. Piecewise Accuracy Modifiers (Regression-calibrated per-zone slopes)
+            acc_bonus = 0
+            if acc > 50: acc_bonus += (min(acc, 60) - 50) * self.CALIB_PARAMS.get("m50", 127.2517)
+            if acc > 60: acc_bonus += (min(acc, 70) - 60) * self.CALIB_PARAMS.get("m60", 196.9384)
+            if acc > 70: acc_bonus += (min(acc, 80) - 70) * self.CALIB_PARAMS.get("m70", 95.8210)
+            if acc > 80: acc_bonus += (min(acc, 85) - 80) * self.CALIB_PARAMS.get("m80", 109.4327)
+            if acc > 85: acc_bonus += (min(acc, 90) - 85) * self.CALIB_PARAMS.get("m85", 0.0)
+            if acc > 90: acc_bonus += (acc - 90) * self.CALIB_PARAMS.get("m90", 339.7956)
+            
+            # 3. Blend: ACPL decay dominates (W1=0.990), accuracy bonus adds residual lift.
+            # Dampening is near-zero (C=0.0001) so acc_bonus flows through at all ACPL levels.
+            dampening_factor = math.exp(-0.0001 * acpl_val)
+            blended_math_elo = (exponential_base_elo * 0.990) + (acc_bonus * dampening_factor * 0.463)
+            
             if acc < 45.0:
-                estimated_elo = 100
+                blended_math_elo = 100
                 
-            final_math_elo = max(100, min(3600, int(estimated_elo)))
+            final_math_elo = max(100, min(3600, int(blended_math_elo)))
             
             # --- GOD-TIER UPGRADE: Bayesian Human Anchor ---
             if base_rating is not None and isinstance(base_rating, int) and base_rating > 100:
-                # Calculate the "Expected Accuracy" for their real rating
-                # (Reversing your calibrated formula)
-                expected_acc = 50.0 + ((base_rating - base) / mult)
+                # Bayesian expected base accuracy using a standardized curve
+                expected_acc = 50.0 + ((base_rating - 500) / 30.0)
                 expected_acc = max(40.0, min(95.0, expected_acc))
                 
-                # If they played exactly to their rating, they get their rating.
-                # If they overperformed/underperformed, the Elo swings heavily.
                 acc_diff = acc - expected_acc
+                bayesian_elo = base_rating + (acc_diff * 40.0) - (acpl_val * 4.0)
                 
-                # A 1% accuracy deviation swings the performance Elo by ~40 points
-                bayesian_elo = base_rating + (acc_diff * 40.0)
-                
-                # Blend the raw math and the Bayesian guess (60% weight to Bayesian)
                 blended_elo = (final_math_elo * 0.4) + (bayesian_elo * 0.6)
                 return max(100, min(3600, int(blended_elo)))
                 
@@ -616,12 +620,15 @@ class AnalysisEngine:
             gap_cp = prev_cp - second_best_cp
             gap_great = self.CALIB_PARAMS.get("gap_great", 180) 
             
-            # Rule D: Brilliant Move (A sound sacrifice that maintains a strong advantage)
-            if is_sac and curr_cp > 100:
+            # Rule D: Brilliant Move (A sound sacrifice that maintains or creates a strong advantage)
+            # FIX: To stop "stupid sacrifices", the move MUST be the engine's top choice (delta_cp >= -20)
+            # AND it must lead to a clear, proven mathematical advantage over the opponent (curr_cp >= 150).
+            if is_sac and curr_cp >= 150 and delta_cp >= -20:
                 return "brilliant"
                 
             # Rule E: Great Move (The "Only Winning Move" in a complex position)
             if (gap_cp >= gap_great or best_gap_wc > 10.0) and curr_cp > 50:
+                # If a sacrifice was good but didn't meet the strict Brilliant threshold, it can still be Great!
                 return "great"
                 
         return None
@@ -975,7 +982,7 @@ class AnalysisEngine:
             "white": {"acc_sum": 0, "cp_loss": 0, "moves": 0},
             "black": {"acc_sum": 0, "cp_loss": 0, "moves": 0}
         }
-        brilliant_fens = []
+        mate_puzzles = []
         prev_eval_white = 20 # Standard starting eval (+0.20)
         
         total_moves = len(mainline)
@@ -987,6 +994,9 @@ class AnalysisEngine:
             san = board.san(move)
             fen = board.fen()
             board_before = board.copy()
+            
+            # FOOLPROOF FIX: Guarantee move_num is declared immediately!
+            move_num = board.fullmove_number
             
             eval_cp = None
             comment = node.comment
@@ -1085,7 +1095,7 @@ class AnalysisEngine:
                 else:
                     cls = "great"
             
-            if cls == "brilliant": brilliant_fens.append(board_before.fen())
+            # (brilliant tracking replaced by endgame mate check)
             
             complexity = self.get_position_complexity(board_before)
             acc = self._calculate_accuracy(w_best, w_after, cls, complexity)
@@ -1146,7 +1156,15 @@ class AnalysisEngine:
                 "pos_reason": pos_reason
             }
             
-            history.append({"move": move, "san": san, "fen": fen, "review": review_dict})
+            history.append({
+                "move": move,
+                "san": san,
+                "fen": fen,
+                "ply": i + 1,                                                       # 1-based, matches node.ply()
+                "color": "white" if turn == chess.WHITE else "black",              # turn was captured before board.push()
+                "clock": node.clock() if hasattr(node, 'clock') else None,        # Preserve %clk from original PGN
+                "review": review_dict
+            })
             prev_eval_white = eval_cp
 
         if progress_callback: progress_callback(100, "Finalizing Analysis...")
@@ -1163,7 +1181,25 @@ class AnalysisEngine:
 
         # --- FIX: Pass history to generate dots ---
         graph = self.generate_graph_surface(evals_for_graph, history)
-        return history, f_stats, ratings, graph, brilliant_fens
+        
+        # --- NEW: Extract Mate Puzzles if game ended in Checkmate ---
+        if board.is_checkmate():
+            total_plies = len(history)
+            if total_plies >= 1:
+                b_m1 = chess.Board()
+                for i in range(total_plies - 1): b_m1.push(history[i]["move"])
+                mate_puzzles.append({"fen": b_m1.fen(), "type": "Mate in 1"})
+            if total_plies >= 3:
+                b_m2 = chess.Board()
+                for i in range(total_plies - 3): b_m2.push(history[i]["move"])
+                try:
+                    info = self.engine.analyse(b_m2, chess.engine.Limit(time=0.1))
+                    score = info["score"].pov(b_m2.turn)
+                    if score.is_mate() and score.mate() > 0:
+                        mate_puzzles.append({"fen": b_m2.fen(), "type": f"Mate in {score.mate()}"})
+                except: pass
+
+        return history, f_stats, ratings, graph, mate_puzzles
         
     def generate_dynamic_commentary(self, board_before, board_after, move, prev_cp, curr_cp, move_class):
         """
@@ -1553,13 +1589,13 @@ class AnalysisEngine:
         # =================================================================
         # PHASE 1: HYPERSPEED PARALLEL PRE-COMPUTATION
         # =================================================================
-        yield 5, None # UI Update
+        yield 0, None # UI Update
         precomputed_data = self.parallel_engine_pool_evaluate(history, target_depth)
 
         board = chess.Board()
         evals = [20]
         total_moves = len(history)
-        brilliant_fens = []
+        mate_puzzles = []
 
         for i, h in enumerate(history):
             yield int((i / total_moves) * 100), None
@@ -1725,8 +1761,7 @@ class AnalysisEngine:
             stats["phase_stats"][player][phase]["acc_sum"] += move_acc
             stats["phase_stats"][player][phase]["count"] += 1
 
-            if cls == "brilliant":
-                brilliant_fens.append(board_before.fen())
+            # (brilliant tracking replaced by endgame mate check)
 
             best_moves_san = []
             if info_before_export:
@@ -1762,12 +1797,13 @@ class AnalysisEngine:
                 "class": cls,
                 "eval_cp": eval_cp_white,
                 "eval_str": formatted_eval,
-                "depth": achieved_depth, # <-- Saving the depth here!
-                "win_chance": win_chance_pct_white, 
+                "depth": achieved_depth,
+                "win_chance": win_chance_pct_white,
                 "accuracy": int(move_acc),
                 "complexity": complexity,
                 "bot_reason": reason_text,
-                "pos_reason": pos_reason
+                "pos_reason": pos_reason,
+                "best_move_uci": best_move.uci() if best_move else None
             }
             prev_info = curr_info
 
@@ -1787,7 +1823,24 @@ class AnalysisEngine:
             
             ratings[p] = stats[p]["elo"]
 
-        yield 100, (history, stats, ratings, self.generate_graph_surface(evals, history), brilliant_fens)
+        # --- NEW: Extract Mate Puzzles if game ended in Checkmate ---
+        if board.is_checkmate():
+            total_plies = len(history)
+            if total_plies >= 1:
+                b_m1 = chess.Board()
+                for i in range(total_plies - 1): b_m1.push(history[i]["move"])
+                mate_puzzles.append({"fen": b_m1.fen(), "type": "Mate in 1"})
+            if total_plies >= 3:
+                b_m2 = chess.Board()
+                for i in range(total_plies - 3): b_m2.push(history[i]["move"])
+                try:
+                    info = self.engine.analyse(b_m2, chess.engine.Limit(time=0.1))
+                    score = info["score"].pov(b_m2.turn)
+                    if score.is_mate() and score.mate() > 0:
+                        mate_puzzles.append({"fen": b_m2.fen(), "type": f"Mate in {score.mate()}"})
+                except: pass
+
+        yield 100, (history, stats, ratings, self.generate_graph_surface(evals, history), mate_puzzles)
 
     def analyze_full_game(self, history, time_limit=None, depth_limit=None):
         gen = self.analyze_game_generator(history, time_limit, depth_limit)
@@ -1968,7 +2021,7 @@ class AnalysisEngine:
     # ---------------------- Calibration Helpers ----------------------
     def simple_classify_by_cp(self, prev_cp, curr_cp, turn):
         """Lightweight fallback classifier using only centipawn movement and win% drops.
-        This is intended for calibration against external references (e.g., like pro chess softwares labels).
+        This is intended for calibration against external references (e.g., like chess.coms labels).
         """
         # Convert to player's point-of-view
         prev_pov = prev_cp if turn == chess.WHITE else -prev_cp
@@ -2044,7 +2097,7 @@ class AnalysisEngine:
         """Calibrate CP thresholds to better match `reference_labels`.
 
         history: list of moves (must include 'review':{'eval_cp': ...} for each move)
-        reference_labels: list of strings, one per history entry, containing like pro chess softwares labels
+        reference_labels: list of strings, one per history entry, containing like chess.coms labels
 
         Returns: dict of best-found thresholds and the resulting classification list.
         """
@@ -2472,7 +2525,21 @@ class AnalysisEngine:
             except Exception: pass
         return history
 
-    def generate_graph_surface(self, evals, history=None): # <-- Added history parameter
+    def generate_graph_surface(self, evals, history=None):
+        """Safe graph generation — works even if matplotlib is not installed."""
+        global matplotlib, plt, agg
+        
+        # Lazy-load matplotlib only when needed
+        if matplotlib is None:
+            try:
+                import matplotlib
+                import matplotlib.pyplot as plt
+                import matplotlib.backends.backend_agg as agg
+                matplotlib.use("Agg")
+            except ImportError:
+                print("WARNING: matplotlib not installed → Graph disabled in Review.")
+                return None  # UI will gracefully skip the graph
+
         try:
             fig = plt.figure(figsize=(7, 2.5), dpi=100)
             ax = fig.add_subplot(111)
@@ -2532,7 +2599,7 @@ class AnalysisEngine:
         endgame_start = total_ply
         last_book_ply = 0
         for ply, step in enumerate(history):
-            if step.get("review", {}).get("class") == "book": last_book_ply = ply
+            if isinstance(step, dict) and step.get("review", {}).get("class") == "book": last_book_ply = ply
             else: break
 
         opening_end = max(16, last_book_ply + 7)
@@ -2540,7 +2607,7 @@ class AnalysisEngine:
 
         for ply, step in enumerate(history):
             if ply < opening_end: continue
-            fen = step.get("fen")
+            fen = step.get("fen") if isinstance(step, dict) else None
             if not fen: continue
             board = chess.Board(fen)
             w_piece_val, b_piece_val = 0, 0
@@ -2578,13 +2645,17 @@ class AnalysisEngine:
             "endgame": (endgame_start, total_ply) if endgame_start < total_ply else None
         }
 
-    def calculate_acl_and_accuracy(self, moves, is_white):
+    def calculate_acpl_and_accuracy(self, moves, is_white):
         """Calculates Average Centipawn Loss and Robust Accuracy for a specific player."""
         if not moves or len(moves) < 2: return {"acl": 0, "accuracy": 0.0, "count": 0}
         total_cp_loss = 0
         analyzed_count = 0
         
         for prev, cur in zip(moves, moves[1:]):
+            if not isinstance(cur, dict) or not isinstance(prev, dict): 
+                print(f"[DEBUG] Skipping non-dict in ACPL calculation: prev={repr(prev)}, cur={repr(cur)}")
+                continue
+            
             move_ply = cur.get("ply", 0)
             if (move_ply % 2 != 0) != is_white: continue
             prev_eval = prev.get("review", {}).get("eval_cp", 20)
@@ -2656,13 +2727,158 @@ class AnalysisEngine:
             
         return {
             "w_name": white_name, "b_name": black_name,
-            "w_rating": history[0].get("w_rating", "?") if history else "?",
-            "b_rating": history[0].get("b_rating", "?") if history else "?",
-            "date": history[0].get("date", "?") if history else "?",
-            "result": history[0].get("result", "*") if history else "*",
+            "w_rating": history[0].get("w_rating", "?") if history and isinstance(history[0], dict) else "?",
+            "b_rating": history[0].get("b_rating", "?") if history and isinstance(history[0], dict) else "?",
+            "date": history[0].get("date", "?") if history and isinstance(history[0], dict) else "?",
+            "result": history[0].get("result", "*") if history and isinstance(history[0], dict) else "*",
             "performance": results
         }
-    
+
+    # ==============================================================================
+    # --- IMPROVED ROBUST CHESS METRICS ENGINE (Phase Detection + ACL -> Accuracy) ---
+    # ==============================================================================
+
+    def detect_game_phases(self, history):
+        """Ultra-Intelligent Phase Detection using Move Count, Book Theory, and Material Heuristics."""
+        total_ply = len(history)
+        endgame_start = total_ply
+        last_book_ply = 0
+        for ply, step in enumerate(history):
+            if isinstance(step, dict) and step.get("review", {}).get("class") == "book": last_book_ply = ply
+            else: break
+
+        opening_end = max(16, last_book_ply + 7)
+        opening_end = min(opening_end, total_ply)
+
+        for ply, step in enumerate(history):
+            if ply < opening_end: continue
+            fen = step.get("fen") if isinstance(step, dict) else None
+            if not fen: continue
+            board = chess.Board(fen)
+            w_piece_val, b_piece_val = 0, 0
+            has_w_queen, has_b_queen = False, False
+            for sq in chess.SQUARES:
+                p = board.piece_at(sq)
+                if p and p.piece_type != chess.KING and p.piece_type != chess.PAWN:
+                    val = 0
+                    if p.piece_type == chess.QUEEN: 
+                        val = 9
+                        if p.color == chess.WHITE: has_w_queen = True
+                        else: has_b_queen = True
+                    elif p.piece_type == chess.ROOK: val = 5
+                    elif p.piece_type in [chess.BISHOP, chess.KNIGHT]: val = 3
+                    if p.color == chess.WHITE: w_piece_val += val
+                    else: b_piece_val += val
+            
+            is_endgame = False
+            if not has_w_queen and not has_b_queen and w_piece_val <= 14 and b_piece_val <= 14: is_endgame = True
+            elif has_w_queen and has_b_queen and w_piece_val <= 12 and b_piece_val <= 12: is_endgame = True
+            elif (has_w_queen != has_b_queen) and (w_piece_val + b_piece_val <= 21): is_endgame = True
+            elif ply >= 80 and w_piece_val <= 16 and b_piece_val <= 16: is_endgame = True
+            if is_endgame:
+                endgame_start = ply
+                break
+
+        if total_ply <= 60: endgame_start = total_ply
+        else:
+            if endgame_start == total_ply: endgame_start = total_ply - 8
+        if endgame_start < opening_end: opening_end = endgame_start
+            
+        return {
+            "opening": (0, opening_end) if opening_end > 0 else None,
+            "middlegame": (opening_end, endgame_start) if endgame_start > opening_end else None,
+            "endgame": (endgame_start, total_ply) if endgame_start < total_ply else None
+        }
+
+    def calculate_acl_and_accuracy(self, moves, is_white):
+        """Calculates Average Centipawn Loss and Robust Accuracy for a specific player."""
+        if not moves or len(moves) < 2: return {"acl": 0, "accuracy": 0.0, "count": 0}
+        total_cp_loss = 0
+        analyzed_count = 0
+        
+        for prev, cur in zip(moves, moves[1:]):
+            if not isinstance(cur, dict) or not isinstance(prev, dict): 
+                print(f"[DEBUG] Skipping non-dict in ACL calculation: prev={repr(prev)}, cur={repr(cur)}")
+                continue
+            
+            move_ply = cur.get("ply", 0)
+            if (move_ply % 2 != 0) != is_white: continue
+            prev_eval = prev.get("review", {}).get("eval_cp", 20) if isinstance(prev, dict) else 20
+            cur_eval = cur.get("review", {}).get("eval_cp", prev_eval) if isinstance(cur, dict) else prev_eval
+            prev_eval = max(-1000, min(1000, prev_eval))
+            cur_eval = max(-1000, min(1000, cur_eval))
+            loss = prev_eval - cur_eval if is_white else cur_eval - prev_eval
+            loss = max(0, min(350, loss)) 
+            total_cp_loss += loss
+            analyzed_count += 1
+            
+        if analyzed_count == 0: return {"acl": 0, "accuracy": 0.0, "count": 0}
+        avg_acl = total_cp_loss / analyzed_count
+        
+        # --- PERFECTED CALIBRATION MATH ---
+        # Uses your exact calibrated acc_weight (1.608 or whatever is currently calibrated) 
+        weight = self.CALIB_PARAMS.get("acc_weight", 1.60835)
+        
+        # This linear subtraction is what your calibrator optimized for!
+        accuracy_percentage = 100.0 - (avg_acl / weight)
+        accuracy_percentage = max(0.0, min(100.0, accuracy_percentage))
+        
+        return {"acl": avg_acl, "accuracy": round(accuracy_percentage, 1), "count": analyzed_count}
+
+    def calculate_detailed_performance(self, history, white_name, black_name):
+        """Processes game history to generate Phase ELOs, overall accuracy, and summaries."""
+        if not history: return None
+        phases = self.detect_game_phases(history)
+        
+        def get_phase_moves(phase_indices):
+            if phase_indices is None: return []
+            start, end = phase_indices
+            if start == 0: return [{"ply": 0, "review": {"eval_cp": 20}}] + history[start:end]
+            else: return history[start - 1 : end]
+
+        results = []
+        padded_overall_history = [{"ply": 0, "review": {"eval_cp": 20}}] + history
+        
+        for is_white in [True, False]:
+            name = white_name if is_white else black_name
+            overall = self.calculate_acl_and_accuracy(padded_overall_history, is_white)
+            opening_p = self.calculate_acl_and_accuracy(get_phase_moves(phases["opening"]), is_white)
+            mid_p = self.calculate_acl_and_accuracy(get_phase_moves(phases["middlegame"]), is_white)
+            end_p = self.calculate_acl_and_accuracy(get_phase_moves(phases["endgame"]), is_white)
+            
+            perf = {
+                "name": name,
+                "is_white": is_white,
+                "overall_accuracy": overall["accuracy"],
+                "performance_elo": self._estimate_elo_from_acpl(overall["acl"], overall["accuracy"]),
+                "acl": overall["acl"],
+                "move_count": overall["count"],
+                "opening_elo": self._estimate_elo_from_acpl(opening_p["acl"], opening_p["accuracy"]) if opening_p["count"] > 0 else None,
+                "middlegame_elo": self._estimate_elo_from_acpl(mid_p["acl"], mid_p["accuracy"]) if mid_p["count"] > 0 else None,
+                "endgame_elo": self._estimate_elo_from_acpl(end_p["acl"], end_p["accuracy"]) if end_p["count"] > 0 else None,
+            }
+            
+            smry = { "brilliant": 0, "great": 0, "best": 0, "excellent": 0, "good": 0, "book": 0, "inaccuracy": 0, "mistake": 0, "blunder": 0, "miss": 0, "move": 0 }
+            for i, x in enumerate(history):
+                if isinstance(x, dict) and "review" in x and isinstance(x["review"], dict) and "class" in x["review"]:
+                    actual_ply = x.get("ply", i + 1) if isinstance(x, dict) else (i + 1)
+                    move_is_white = (actual_ply % 2 != 0)
+                    if move_is_white == is_white:
+                        c = x["review"]["class"]
+                        if c in smry: smry[c] += 1
+                        else: smry[c] = 1
+            perf["summary"] = smry
+            results.append(perf)
+            
+        return {
+            "w_name": white_name, "b_name": black_name,
+            "w_rating": history[0].get("w_rating", "?") if history and isinstance(history[0], dict) else "?",
+            "b_rating": history[0].get("b_rating", "?") if history and isinstance(history[0], dict) else "?",
+            "date": history[0].get("date", "?") if history and isinstance(history[0], dict) else "?",
+            "result": history[0].get("result", "*") if history and isinstance(history[0], dict) else "*",
+            "performance": results
+        }
+
     def is_material_sacrifice(self, board, move):
         """Check if move involves material sacrifice"""
         if board.is_capture(move):
@@ -2680,7 +2896,7 @@ class AnalysisEngine:
         return False
     
     def analyze_sacrifice(self, board, move, depth=20):
-        """Enhanced sacrifice analysis with Chess.com-style evaluation"""
+        """Enhanced sacrifice analysis with chess.com-style evaluation"""
         if not self.is_material_sacrifice(board, move):
             return None
         
@@ -2812,7 +3028,7 @@ class AnalysisEngine:
         return threats * 15 + king_safety
     
     def _classify_sacrifice(self, eval_score, attack_potential, positional_gain, initiative_score):
-        """Classify sacrifice quality like Chess.com"""
+        """Classify sacrifice quality like chess.com"""
         total_compensation = attack_potential + positional_gain + initiative_score
         
         if eval_score >= self.SACRIFICE_THRESHOLDS["brilliant_min"]:
@@ -2837,60 +3053,3 @@ class AnalysisEngine:
         }
         
         return recommendations.get(category, "Unclear sacrifice.")
-        
-class HybridTablebase:
-    """
-    Manages endgame tablebases. 
-    Online: Pings Lichess 7-piece API.
-    Offline Fallback: Uses local Python-Chess Syzygy parser.
-    """
-    def __init__(self, local_path="assets/syzygy"):
-        self.local_path = os.path.abspath(local_path)
-        self.local_tb = None
-        self._init_local()
-
-    def _init_local(self):
-        if os.path.exists(self.local_path) and len(os.listdir(self.local_path)) > 0:
-            try:
-                self.local_tb = chess.syzygy.open_tablebase(self.local_path)
-                print(f"[TABLEBASE] Local Syzygy loaded from {self.local_path}")
-            except Exception as e:
-                print(f"[TABLEBASE] Could not load local files: {e}")
-
-    def get_evaluation(self, board):
-        piece_count = len(board.piece_map())
-        if piece_count > 7:
-            return None 
-
-        # --- 1. ONLINE ATTEMPT (Lichess 7-Piece API) ---
-        try:
-            url = f"http://tablebase.lichess.ovh/standard?fen={board.fen()}"
-            resp = requests.get(url, timeout=1.5)
-            if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    "source": "Cloud API",
-                    "dtz": data.get("dtz"),
-                    "wdl": data.get("wdl")
-                }
-        except Exception:
-            pass 
-
-        # --- 2. OFFLINE FALLBACK (Local Assets) ---
-        if self.local_tb is not None:
-            try:
-                wdl = self.local_tb.probe_wdl(board)
-                dtz = self.local_tb.probe_dtz(board)
-                return {
-                    "source": "Local Asset",
-                    "dtz": dtz,
-                    "wdl": wdl
-                }
-            except Exception:
-                pass 
-
-        return None
-    
-    def close(self):
-        if self.local_tb:
-            self.local_tb.close()

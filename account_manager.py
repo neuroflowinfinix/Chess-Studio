@@ -170,12 +170,25 @@ class ChessAccountManager:
             date = pgn_game.headers.get('UTCDate', '')
             time_control = pgn_game.headers.get('TimeControl', '')
             
+            # Extract ratings
+            white_elo = pgn_game.headers.get('WhiteElo', '0')
+            black_elo = pgn_game.headers.get('BlackElo', '0')
+            white_rating_diff = pgn_game.headers.get('WhiteRatingDiff', '0')
+            black_rating_diff = pgn_game.headers.get('BlackRatingDiff', '0')
+            
             # Determine if user played as white or black
             user_color = None
+            current_rating = 0
+            rating_change = 0
+            
             if username.lower() in white.lower():
                 user_color = 'white'
+                current_rating = int(white_elo) if white_elo.isdigit() else 0
+                rating_change = int(white_rating_diff) if white_rating_diff.lstrip('-').isdigit() else 0
             elif username.lower() in black.lower():
                 user_color = 'black'
+                current_rating = int(black_elo) if black_elo.isdigit() else 0
+                rating_change = int(black_rating_diff) if black_rating_diff.lstrip('-').isdigit() else 0
             
             return {
                 'pgn': pgn,
@@ -187,6 +200,8 @@ class ChessAccountManager:
                 'user_color': user_color,
                 'source': 'chess.com',
                 'url': game_data.get('url', ''),
+                'rating': current_rating,
+                'rating_change': rating_change,
                 'accuracy': game_data.get('accuracy', {}),
                 'end_time': game_data.get('end_time', 0)
             }
@@ -252,10 +267,17 @@ class ChessAccountManager:
             
             # Determine user color
             user_color = None
+            current_rating = 0
+            rating_change = 0
+            
             if username.lower() in white.lower():
                 user_color = 'white'
+                current_rating = white_player.get('rating', 1500)
+                rating_change = white_player.get('ratingDiff', 0)
             elif username.lower() in black.lower():
                 user_color = 'black'
+                current_rating = black_player.get('rating', 1500)
+                rating_change = black_player.get('ratingDiff', 0)
             
             return {
                 'pgn': game,
@@ -267,6 +289,8 @@ class ChessAccountManager:
                 'user_color': user_color,
                 'source': 'lichess',
                 'url': f"https://lichess.org/{game_data.get('id', '')}",
+                'rating': current_rating,
+                'rating_change': rating_change,
                 'accuracy': game_data.get('analysis', {}),
                 'opening': game_data.get('opening', {})
             }

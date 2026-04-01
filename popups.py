@@ -22,7 +22,8 @@ class BasePopup:
     def __init__(self, parent, w=600, h=500):
         self.parent = parent
         self.active = True
-        self.w, self.h = w, h
+        # UI POLISH: Universally scale up ALL popups by 10% for a more spacious, breathable look
+        self.w, self.h = int(w * 1.10), int(h * 1.10)
         self.rect = pygame.Rect(0, 0, self.w, self.h)
         self.update_rect()
         self.close_btn = None
@@ -35,30 +36,37 @@ class BasePopup:
 
     def draw_bg(self, screen, title, fb):
         self.update_rect()
+        
+        # 1. Darker, smoother overlay behind the popup to focus attention
         ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 150))
+        ov.fill((0, 0, 0, 160))
         screen.blit(ov, (0, 0))
-        # Light Theme
-        pygame.draw.rect(screen, (250, 250, 252), self.rect, border_radius=12)
-        pygame.draw.rect(screen, (200, 200, 200), self.rect, 2, border_radius=12)
         
-        # Title Bar
-        screen.blit(fb.render(title, True, (40, 40, 40)), (self.rect.x + 20, self.rect.y + 20))
+        # 2. Modern Drop Shadow (Dynamic size matching the popup)
+        shadow_rect = self.rect.copy()
+        shadow_rect.y += 8
+        shadow_surf = pygame.Surface((shadow_rect.width + 10, shadow_rect.height + 10), pygame.SRCALPHA)
+        pygame.draw.rect(shadow_surf, (0, 0, 0, 50), shadow_surf.get_rect(), border_radius=20)
+        screen.blit(shadow_surf, (shadow_rect.x, shadow_rect.y))
         
-        self.close_btn = pygame.Rect(self.rect.right - 40, self.rect.y + 15, 30, 30)
-        pygame.draw.rect(screen, (220, 220, 220), self.close_btn, border_radius=6)
-        screen.blit(fb.render("X", True, (0, 0, 0)), (self.close_btn.x + 8, self.close_btn.y + 2))
+        # 3. Main Popup Body (Light Theme to preserve child text colors, with softer radius)
+        pygame.draw.rect(screen, (252, 252, 254), self.rect, border_radius=16)
+        pygame.draw.rect(screen, (210, 210, 215), self.rect, 2, border_radius=16)
+        
+        # Title Bar — centred horizontally
+        t_surf = fb.render(title, True, (40, 40, 45))
+        screen.blit(t_surf, (self.rect.centerx - t_surf.get_width()//2, self.rect.y + 24))
+        
+        self.close_btn = pygame.Rect(self.rect.right - 46, self.rect.y + 18, 30, 30)
 
-        # --- FIX 7: Image Close Button ---
+        # --- FIX 7: Image Close Button (With Hover Dynamics) ---
         if self.close_btn:
             close_icon = self.parent.assets.icons.get("close_btn")
-            # Try to load from assets/icons/close_btn.png if not present in assets
             if not close_icon:
                 try:
                     p = os.path.join('assets', 'icons', 'close_btn.png')
                     if os.path.exists(p):
                         img = pygame.image.load(p).convert_alpha()
-                        # Cache original; scaling will be applied when blitting
                         self.parent.assets.icons['close_btn'] = img
                         close_icon = img
                 except Exception:
@@ -66,155 +74,296 @@ class BasePopup:
 
             if close_icon:
                 try:
+                    # Optional: Add a slight dark overlay on hover to image
+                    if self.close_btn.collidepoint(pygame.mouse.get_pos()):
+                        pygame.draw.rect(screen, (230, 230, 235), self.close_btn, border_radius=6)
                     screen.blit(pygame.transform.smoothscale(close_icon, (self.close_btn.w, self.close_btn.h)), (self.close_btn.x, self.close_btn.y))
                 except Exception:
-                    # If scaling fails, blit raw
                     screen.blit(close_icon, (self.close_btn.x, self.close_btn.y))
             else:
-                # Fallback if image fails to load
-                pygame.draw.rect(screen, (200, 200, 200), self.close_btn, border_radius=5)
-                screen.blit(fb.render("X", True, (0, 0, 0)), (self.close_btn.x + 8, self.close_btn.y + 2))
-
-# =============================================================================
-#  PUZZLE POPUP
-# =============================================================================
-# In popups.py
+                # Modern Red Close Button Fallback
+                is_hover = self.close_btn.collidepoint(pygame.mouse.get_pos())
+                col = (240, 80, 80) if is_hover else (225, 225, 230)
+                txt_col = (255, 255, 255) if is_hover else (100, 100, 100)
+                pygame.draw.rect(screen, col, self.close_btn, border_radius=8)
+                x_surf = fb.render("X", True, txt_col)
+                screen.blit(x_surf, (self.close_btn.centerx - x_surf.get_width()//2,
+                                     self.close_btn.centery - x_surf.get_height()//2))
 
 class PuzzlePopup(BasePopup):
     def __init__(self, parent):
-        super().__init__(parent, 800, 600) # Made wider for 3 tabs
-        self.assets = parent.assets
-        self.tab = "unsolved" # "unsolved", "solved", "appmade"
-        self.scroll = 0
-        self.zones = []
-        self.edit_idx = -1
+        super().__init__(parent, 880, 640)
+        self.assets    = parent.assets
+        self.tab       = "unsolved"
+        self.scroll    = 0
+        self.zones     = []
+        self.edit_idx  = -1
         self.edit_text = ""
-        
-        # Tab Rects
-        self.btn_unsolved = None
-        self.btn_solved = None
-        self.btn_appmade = None # New Tab
-        
-        self.btn_new = None
-        self.btn_reload = None
-        
-        self.assets.refresh_puzzles() 
 
+        self.btn_unsolved         = None
+        self.btn_solved           = None
+        self.btn_appmade          = None
+        self.btn_new              = None
+        self.btn_reload           = None
+        self.btn_solution         = None
+        self.btn_download_lichess = None
+
+        # Lichess download state
+        self._dl_status   = ""     # "" | "downloading" | "done — N added!" | "error: …"
+        self._dl_progress = 0.0    # 0.0 – 1.0
+        self._dl_bytes_done = 0    # bytes received so far
+        self._dl_bytes_total = 0   # total content-length (0 if unknown)
+        self._dl_count    = 0
+        self._sidecar     = {}
+        self._online_cache = None  # None = unchecked
+
+        # Toast
+        self._toast_msg      = ""
+        self._toast_timer    = 0
+        self._TOAST_DURATION = 150
+
+        self.assets.refresh_puzzles()
+        self._sidecar = self.assets.get_lichess_sidecar()
+
+    # ------------------------------------------------------------------ draw
     def draw(self, screen, fb, fm):
         self.draw_bg(screen, "Chess Puzzles", fb)
-        
-        # --- TABS ---
-        tab_y = self.rect.y + 70
-        tab_w = 140
-        self.btn_unsolved = pygame.Rect(self.rect.x + 20, tab_y, tab_w, 35)
-        self.btn_solved = pygame.Rect(self.rect.x + 170, tab_y, tab_w, 35)
-        self.btn_appmade = pygame.Rect(self.rect.x + 320, tab_y, tab_w, 35) # New
-        
-        # Colors
-        col_u = THEME["accent"] if self.tab == "unsolved" else (220, 220, 220)
-        col_s = THEME["accent"] if self.tab == "solved" else (220, 220, 220)
-        col_a = THEME["accent"] if self.tab == "appmade" else (220, 220, 220)
-        
-        # Draw Tabs
-        pygame.draw.rect(screen, col_u, self.btn_unsolved, border_radius=6)
-        screen.blit(fm.render("Unsolved", True, (255,255,255) if self.tab=="unsolved" else (0,0,0)), (self.btn_unsolved.x+35, self.btn_unsolved.y+8))
-        
-        pygame.draw.rect(screen, col_s, self.btn_solved, border_radius=6)
-        screen.blit(fm.render("Solved", True, (255,255,255) if self.tab=="solved" else (0,0,0)), (self.btn_solved.x+40, self.btn_solved.y+8))
-        
-        pygame.draw.rect(screen, col_a, self.btn_appmade, border_radius=6)
-        screen.blit(fm.render("My Puzzles", True, (255,255,255) if self.tab=="appmade" else (0,0,0)), (self.btn_appmade.x+25, self.btn_appmade.y+8))
 
-        # --- ACTION BUTTONS (Right Side) ---
-        self.btn_new = pygame.Rect(self.rect.right - 140, tab_y, 120, 35)
-        pygame.draw.rect(screen, (60, 180, 60), self.btn_new, border_radius=6)
-        screen.blit(fm.render("Random", True, (255,255,255)), (self.btn_new.x+30, self.btn_new.y+8))
-        
-        if self.parent.mode == "puzzle":
-            self.btn_reload = pygame.Rect(self.rect.right - 280, tab_y, 120, 35)
-            pygame.draw.rect(screen, (200, 180, 50), self.btn_reload, border_radius=6)
-            screen.blit(fm.render("Reload", True, (255,255,255)), (self.btn_reload.x+35, self.btn_reload.y+8))
+        tab_y  = self.rect.y + 70
+        tab_w  = 126
+        tab_gap = 8
 
-        # --- PUZZLE LIST ---
-        # Select source based on tab
-        if self.tab == "unsolved":
-            puzzles = self.assets.puzzles_unsolved
-        elif self.tab == "solved":
-            puzzles = self.assets.puzzles_solved
+        self.btn_unsolved = pygame.Rect(self.rect.x + 20, tab_y, tab_w, 34)
+        self.btn_solved   = pygame.Rect(self.rect.x + 20 + tab_w + tab_gap, tab_y, tab_w, 34)
+        self.btn_appmade  = pygame.Rect(self.rect.x + 20 + (tab_w + tab_gap) * 2, tab_y, tab_w, 34)
+
+        for btn, label, key in [
+            (self.btn_unsolved, "Unsolved", "unsolved"),
+            (self.btn_solved,   "Solved",   "solved"),
+            (self.btn_appmade,  "My Puzzles","appmade"),
+        ]:
+            active  = (self.tab == key)
+            bg_col  = THEME["accent"] if active else (218, 218, 224)
+            pygame.draw.rect(screen, bg_col, btn, border_radius=7)
+            t = fm.render(label, True, (255,255,255) if active else (50,50,60))
+            screen.blit(t, (btn.centerx - t.get_width()//2, btn.centery - t.get_height()//2))
+
+        # ── Lichess download button ───────────────────────────────────────────
+        dl_btn_x = self.rect.x + 20 + (tab_w + tab_gap) * 3 + 14
+        self.btn_download_lichess = pygame.Rect(dl_btn_x, tab_y, 190, 34)
+
+        if self._dl_status == "downloading":
+            dl_col   = (50, 140, 60)
+            dl_label = "Downloading…"
         else:
-            puzzles = self.assets.appmade_puzzles
-        
-        clip_rect = pygame.Rect(self.rect.x + 20, self.rect.y + 120, self.w - 40, self.h - 140)
+            if self._online_cache is None:
+                try:
+                    import socket
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(0.4)
+                    s.connect(("8.8.8.8", 53))
+                    s.close()
+                    self._online_cache = True
+                except Exception:
+                    self._online_cache = False
+            dl_col  = (38, 155, 68) if self._online_cache else (155, 155, 155)
+            dl_label = "↓ Lichess Attraction" if self._online_cache else "↓ Offline"
+
+        if self.btn_download_lichess.collidepoint(pygame.mouse.get_pos()) and dl_col != (155,155,155):
+            dl_col = tuple(min(255, c + 18) for c in dl_col)
+        pygame.draw.rect(screen, dl_col, self.btn_download_lichess, border_radius=7)
+        dl_t = self.parent.font_s.render(dl_label, True, (255,255,255))
+        screen.blit(dl_t, (self.btn_download_lichess.centerx - dl_t.get_width()//2,
+                             self.btn_download_lichess.centery - dl_t.get_height()//2))
+
+        # ── Download progress bar (shown while downloading) ───────────────────
+        if self._dl_status == "downloading":
+            pb_rect = pygame.Rect(self.rect.x + 20, tab_y + 40, self.rect.width - 40, 18)
+            pygame.draw.rect(screen, (210, 220, 210), pb_rect, border_radius=9)
+            fill_w = int(self._dl_progress * pb_rect.width)
+            if fill_w > 0:
+                pygame.draw.rect(screen, (50, 190, 80),
+                                 pygame.Rect(pb_rect.x, pb_rect.y, fill_w, pb_rect.height),
+                                 border_radius=9)
+            # Label: "Downloading … 47%  (3.2 / 6.8 MB)"
+            pct_str = f"{int(self._dl_progress * 100)}%"
+            if self._dl_bytes_total > 0:
+                done_mb  = self._dl_bytes_done  / (1024 * 1024)
+                total_mb = self._dl_bytes_total / (1024 * 1024)
+                size_str = f"  ({done_mb:.1f} / {total_mb:.1f} MB)"
+            else:
+                size_str = f"  ({self._dl_bytes_done // 1024} KB received)"
+            pb_label = self.parent.font_s.render(
+                f"Downloading Lichess puzzles…  {pct_str}{size_str}", True, (30, 80, 30))
+            screen.blit(pb_label, (pb_rect.centerx - pb_label.get_width()//2,
+                                    pb_rect.y + (pb_rect.height - pb_label.get_height())//2))
+            list_top_offset = 130   # push list down to make room
+        else:
+            list_top_offset = 120
+            # Show last status message (done / error) next to download button
+            if self._dl_status:
+                st_col = (40,155,40) if "done" in self._dl_status else (190,50,50)
+                st = self.parent.font_s.render(self._dl_status, True, st_col)
+                screen.blit(st, (self.btn_download_lichess.right + 10,
+                                  self.btn_download_lichess.centery - st.get_height()//2))
+
+        # ── Random / Reload / Solution buttons ────────────────────────────────
+        self.btn_new = pygame.Rect(self.rect.right - 128, tab_y, 108, 34)
+        pygame.draw.rect(screen, (55, 175, 55), self.btn_new, border_radius=7)
+        t = fm.render("Random", True, (255,255,255))
+        screen.blit(t, (self.btn_new.centerx - t.get_width()//2, self.btn_new.centery - t.get_height()//2))
+
+        self.btn_reload = None
+        self.btn_solution = None
+        if self.parent.mode == "puzzle":
+            self.btn_reload = pygame.Rect(self.rect.right - 128, tab_y + 42, 108, 30)
+            pygame.draw.rect(screen, (195, 175, 45), self.btn_reload, border_radius=7)
+            t = self.parent.font_s.render("Reload", True, (255,255,255))
+            screen.blit(t, (self.btn_reload.centerx - t.get_width()//2,
+                             self.btn_reload.centery - t.get_height()//2))
+
+            if getattr(self.parent, 'puzzle_wrong_attempts', 0) >= 1:
+                self.btn_solution = pygame.Rect(self.rect.right - 128, tab_y + 80, 108, 30)
+                sol_col = (185, 50, 50) if self.btn_solution.collidepoint(pygame.mouse.get_pos()) else (160, 42, 42)
+                pygame.draw.rect(screen, sol_col, self.btn_solution, border_radius=7)
+                t = self.parent.font_s.render("Solution", True, (255,255,255))
+                screen.blit(t, (self.btn_solution.centerx - t.get_width()//2,
+                                 self.btn_solution.centery - t.get_height()//2))
+
+        # ── Puzzle list ───────────────────────────────────────────────────────
+        if self.tab == "unsolved":  puzzles = self.assets.puzzles_unsolved
+        elif self.tab == "solved":  puzzles = self.assets.puzzles_solved
+        else:                       puzzles = self.assets.appmade_puzzles
+
+        clip_rect = pygame.Rect(self.rect.x + 20, self.rect.y + list_top_offset,
+                                self.w - 40, self.h - list_top_offset - 20)
         pygame.draw.rect(screen, (255,255,255), clip_rect, border_radius=8)
+        pygame.draw.rect(screen, (215,215,222), clip_rect, 1, border_radius=8)
         screen.set_clip(clip_rect)
-        
-        total_h = len(puzzles) * 60
+
+        total_h  = len(puzzles) * 60
         max_scroll = max(0, total_h - clip_rect.height)
         self.scroll = max(0, min(self.scroll, max_scroll))
-        
+
         y = clip_rect.y - self.scroll
         self.zones = []
-        
-        # Use different icons for different tabs
-        icon_key = "puzzles"
-        if self.tab == "appmade": icon_key = "brilliant" # Use brilliant icon for my puzzles
-        icon = self.assets.icons.get(icon_key)
-        
+        use_drawn_icon = (self.tab == "appmade")
+        icon = None if use_drawn_icon else self.assets.icons.get("puzzles")
+
         for i, p in enumerate(puzzles):
             if y + 60 < clip_rect.y: y += 60; continue
             if y > clip_rect.bottom: break
-            
-            row = pygame.Rect(clip_rect.x, y, clip_rect.width, 50)
-            if row.collidepoint(pygame.mouse.get_pos()): pygame.draw.rect(screen, (240, 240, 250), row)
-            
-            if icon: screen.blit(pygame.transform.smoothscale(icon, (30,30)), (row.x+10, row.y+10))
-            
-            # Name or Edit Box
+
+            row = pygame.Rect(clip_rect.x, y, clip_rect.width, 54)
+            if row.collidepoint(pygame.mouse.get_pos()):
+                pygame.draw.rect(screen, (238, 242, 255), row)
+
+            # Icon
+            if use_drawn_icon:
+                ic_cx, ic_cy = row.x + 26, row.y + 27
+                pygame.draw.circle(screen, (30, 30, 35), (ic_cx, ic_cy), 16)
+                pygame.draw.circle(screen, (60, 60, 70), (ic_cx, ic_cy), 16, 1)
+                h_s = self.parent.font_b.render("#", True, (255,255,255))
+                screen.blit(h_s, (ic_cx - h_s.get_width()//2, ic_cy - h_s.get_height()//2 - 1))
+            elif icon:
+                screen.blit(pygame.transform.smoothscale(icon, (30, 30)), (row.x + 10, row.y + 12))
+
+            # Lichess badge + rating
+            fen_key      = " ".join(p.get("fen","").split()[:3])
+            sc_entry     = self._sidecar.get(fen_key, {})
+            is_lichess   = bool(sc_entry) or "Lichess" in p.get("name","")
+            rating_str   = str(sc_entry.get("rating","")) if sc_entry else ""
+
+            if is_lichess:
+                badge_s = self.parent.font_s.render("♟ Lichess", True, (255,255,255))
+                badge_r = pygame.Rect(row.x + 50, row.y + 8, badge_s.get_width() + 10, 17)
+                pygame.draw.rect(screen, (28, 148, 126), badge_r, border_radius=5)
+                screen.blit(badge_s, (badge_r.x + 5, badge_r.y + 2))
+                name_x = badge_r.right + 8
+            else:
+                name_x = row.x + 50
+
             if i == self.edit_idx:
-                edit_box = pygame.Rect(row.x+50, row.y+10, 300, 30)
+                edit_box = pygame.Rect(name_x, row.y + 8, 280, 28)
                 pygame.draw.rect(screen, (255,255,255), edit_box)
-                pygame.draw.rect(screen, THEME["accent"], edit_box, 2)
+                pygame.draw.rect(screen, THEME["accent"], edit_box, 2, border_radius=4)
                 screen.blit(fm.render(self.edit_text, True, (0,0,0)), (edit_box.x+5, edit_box.y+5))
             else:
-                screen.blit(fm.render(p["name"], True, (0,0,0)), (row.x+50, row.y+15))
-            
+                p_name = p["name"]
+                if is_lichess and rating_str:
+                    p_name = f"{p_name}  [{rating_str}]"
+                screen.blit(fm.render(p_name, True, (20,20,30)), (name_x, row.y + 16))
+
             # Buttons
-            btn_load = pygame.Rect(row.right-80, row.y+10, 70, 30)
-            pygame.draw.rect(screen, (60, 160, 220), btn_load, border_radius=4)
-            screen.blit(self.parent.font_s.render("Play", True, (255,255,255)), (btn_load.x+20, btn_load.y+6))
-            
-            btn_edit = pygame.Rect(row.right-160, row.y+10, 70, 30)
-            pygame.draw.rect(screen, (200, 200, 200), btn_edit, border_radius=4)
-            screen.blit(self.parent.font_s.render("Rename", True, (0,0,0)), (btn_edit.x+12, btn_edit.y+6))
-            
-            self.zones.append({"load": btn_load, "edit": btn_edit, "idx": i, "puzzle": p})
-            
-            pygame.draw.line(screen, (230,230,230), (row.x, row.bottom), (row.right, row.bottom))
+            btn_load = pygame.Rect(row.right - 76, row.y + 11, 66, 28)
+            pygame.draw.rect(screen, (48, 148, 215), btn_load, border_radius=5)
+            t = self.parent.font_s.render("Play", True, (255,255,255))
+            screen.blit(t, (btn_load.centerx - t.get_width()//2, btn_load.centery - t.get_height()//2))
+
+            btn_edit = pygame.Rect(row.right - 150, row.y + 11, 66, 28)
+            pygame.draw.rect(screen, (198,198,204), btn_edit, border_radius=5)
+            t = self.parent.font_s.render("Rename", True, (40,40,40))
+            screen.blit(t, (btn_edit.centerx - t.get_width()//2, btn_edit.centery - t.get_height()//2))
+
+            btn_again = None
+            if self.tab == "solved":
+                btn_again = pygame.Rect(row.right - 228, row.y + 11, 70, 28)
+                pygame.draw.rect(screen, (155,155,168), btn_again, border_radius=5)
+                ta = self.parent.font_s.render("▶ Again", True, (255,255,255))
+                screen.blit(ta, (btn_again.centerx - ta.get_width()//2, btn_again.centery - ta.get_height()//2))
+
+            self.zones.append({"load": btn_load, "edit": btn_edit,
+                                "again": btn_again, "idx": i, "puzzle": p})
+            pygame.draw.line(screen, (228,228,232), (row.x, row.bottom), (row.right, row.bottom))
             y += 60
-            
+
         screen.set_clip(None)
 
+        # ── Toast ─────────────────────────────────────────────────────────────
+        if self._toast_timer > 0:
+            self._toast_timer -= 1
+            progress = self._toast_timer / self._TOAST_DURATION
+            slide  = min(1.0, (1.0 - progress) / 0.2) if progress > 0.8 else \
+                     (progress / 0.2 if progress < 0.2 else 1.0)
+            alpha  = int(220 * slide)
+            toast_h, toast_w = 42, min(440, self.w - 40)
+            toast_x = self.rect.centerx - toast_w // 2
+            toast_y = int((self.rect.bottom + 4) - ((self.rect.bottom + 4) - (self.rect.bottom - toast_h - 12)) * slide)
+            bg = pygame.Surface((toast_w, toast_h), pygame.SRCALPHA)
+            bg.fill((30, 30, 35, alpha))
+            pygame.draw.rect(bg, (30,30,35,alpha), bg.get_rect(), border_radius=10)
+            screen.blit(bg, (toast_x, toast_y))
+            border = pygame.Surface((toast_w, toast_h), pygame.SRCALPHA)
+            pygame.draw.rect(border, (220,70,70,alpha), border.get_rect(), 2, border_radius=10)
+            screen.blit(border, (toast_x, toast_y))
+            t_surf = fm.render(self._toast_msg, True, (255,255,255))
+            ta2 = pygame.Surface(t_surf.get_size(), pygame.SRCALPHA)
+            ta2.fill((255,255,255,alpha))
+            t_surf.blit(ta2, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+            screen.blit(t_surf, (toast_x + toast_w//2 - t_surf.get_width()//2,
+                                  toast_y + toast_h//2 - t_surf.get_height()//2))
+
+    # ------------------------------------------------------------------ interaction
     def handle_scroll(self, e):
-        if e.button == 4: self.scroll -= 30
-        elif e.button == 5: self.scroll += 30
+        if e.button == 4: self.scroll = max(0, self.scroll - 32)
+        elif e.button == 5: self.scroll += 32
 
     def handle_click(self, pos):
         if self.close_btn.collidepoint(pos): self.active = False; return
-        
-        # Tab Switching
-        if self.btn_unsolved.collidepoint(pos): self.tab = "unsolved"; self.scroll=0; self.edit_idx=-1; return
-        if self.btn_solved.collidepoint(pos): self.tab = "solved"; self.scroll=0; self.edit_idx=-1; return
-        if self.btn_appmade.collidepoint(pos): self.tab = "appmade"; self.scroll=0; self.edit_idx=-1; return
-        
-        if self.btn_new.collidepoint(pos):
-            # Pick random from current tab
-            current_list = self.assets.puzzles_unsolved
-            if self.tab == "solved": current_list = self.assets.puzzles_solved
-            elif self.tab == "appmade": current_list = self.assets.appmade_puzzles
-            
-            if current_list:
-                p = random.choice(current_list)
-                self.parent.start_puzzle(p)
+
+        if self.btn_unsolved and self.btn_unsolved.collidepoint(pos):
+            self.tab = "unsolved"; self.scroll = 0; self.edit_idx = -1; return
+        if self.btn_solved and self.btn_solved.collidepoint(pos):
+            self.tab = "solved";   self.scroll = 0; self.edit_idx = -1; return
+        if self.btn_appmade and self.btn_appmade.collidepoint(pos):
+            self.tab = "appmade";  self.scroll = 0; self.edit_idx = -1; return
+
+        if self.btn_new and self.btn_new.collidepoint(pos):
+            lst = {"unsolved": self.assets.puzzles_unsolved,
+                   "solved":   self.assets.puzzles_solved,
+                   "appmade":  self.assets.appmade_puzzles}.get(self.tab, [])
+            if lst:
+                self.parent.start_puzzle(random.choice(lst))
                 self.active = False
             return
 
@@ -223,213 +372,414 @@ class PuzzlePopup(BasePopup):
                 self.parent.start_puzzle(self.parent.active_puzzle)
                 self.active = False
             return
-            
+
+        # Solution button
+        if self.btn_solution and self.btn_solution.collidepoint(pos):
+            if self.parent.analyzer and self.parent.analyzer.is_active:
+                try:
+                    import chess.engine
+                    info = self.parent.analyzer.engine.analyse(
+                        self.parent.board, chess.engine.Limit(time=0.6), multipv=1)
+                    if info and "pv" in info[0]:
+                        pv = info[0]["pv"]
+                        san_list, tmp = [], self.parent.board.copy()
+                        for m in pv[:6]:
+                            try: san_list.append(tmp.san(m)); tmp.push(m)
+                            except Exception: break
+                        self.parent.add_chat("Solution", "  ".join(san_list))
+                        if pv: self.parent.trainer_hint_arrow = pv[0]
+                except Exception as e:
+                    print(f"Solution error: {e}")
+            return
+
+        # Lichess download button
+        if (self.btn_download_lichess and self.btn_download_lichess.collidepoint(pos)
+                and self._dl_status != "downloading" and self._online_cache):
+            self._start_lichess_download()
+            return
+
         if self.edit_idx != -1: self.commit_edit(); return
 
         for z in self.zones:
             if z["load"].collidepoint(pos):
-                self.parent.start_puzzle(z["puzzle"])
-                self.active = False
-                return
+                self.parent.start_puzzle(z["puzzle"]); self.active = False; return
+            if z.get("again") and z["again"].collidepoint(pos):
+                self.parent.start_puzzle(z["puzzle"]); self.active = False; return
             if z["edit"].collidepoint(pos):
-                self.edit_idx = z["idx"]
-                self.edit_text = z["puzzle"]["name"]
-                return
+                self.edit_idx = z["idx"]; self.edit_text = z["puzzle"]["name"]; return
 
     def handle_input(self, e):
         if e.type == pygame.KEYDOWN and self.edit_idx != -1:
-            if e.key == pygame.K_RETURN: self.commit_edit()
+            if e.key == pygame.K_RETURN:    self.commit_edit()
             elif e.key == pygame.K_BACKSPACE: self.edit_text = self.edit_text[:-1]
             else: self.edit_text += e.unicode
 
     def commit_edit(self):
         if self.edit_idx != -1:
-            if self.tab == "unsolved": puzzles = self.assets.puzzles_unsolved
-            elif self.tab == "solved": puzzles = self.assets.puzzles_solved
-            else: puzzles = self.assets.appmade_puzzles
-            
-            if 0 <= self.edit_idx < len(puzzles):
-                p = puzzles[self.edit_idx]
+            lst = {"unsolved": self.assets.puzzles_unsolved,
+                   "solved":   self.assets.puzzles_solved,
+                   "appmade":  self.assets.appmade_puzzles}.get(self.tab, [])
+            if 0 <= self.edit_idx < len(lst):
+                p = lst[self.edit_idx]
                 if self.edit_text.strip():
                     self.assets.rename_puzzle(p, self.edit_text)
-            self.edit_idx = -1
-            self.edit_text = ""
+            self.edit_idx = -1; self.edit_text = ""
+
+    # ------------------------------------------------------------------ download
+    def _start_lichess_download(self):
+        """
+        Streams the Lichess puzzle batch API.
+        Endpoint: GET https://lichess.org/api/puzzle/batch?nb=50&themes=attraction
+        Returns JSON with a "puzzles" array.  No auth required.
+        Progress is tracked by bytes received vs Content-Length.
+        """
+        import threading
+        self._dl_status     = "downloading"
+        self._dl_progress   = 0.0
+        self._dl_bytes_done = 0
+        self._dl_bytes_total = 0
+        self._online_cache  = None   # re-check next open
+
+        def _fetch():
+            try:
+                import urllib.request, json, chess as _chess
+
+                url = "https://lichess.org/api/puzzle/batch?nb=50&themes=attraction"
+                req = urllib.request.Request(url, headers={
+                    "Accept":     "application/json",
+                    "User-Agent": "ChessStudioPro/1.0",
+                })
+
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    # Try to get total size for accurate progress bar
+                    cl = resp.headers.get("Content-Length")
+                    self._dl_bytes_total = int(cl) if cl else 0
+
+                    # Stream in 4 KB chunks so the progress bar updates live
+                    chunks = []
+                    while True:
+                        chunk = resp.read(4096)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        self._dl_bytes_done += len(chunk)
+                        if self._dl_bytes_total > 0:
+                            self._dl_progress = self._dl_bytes_done / self._dl_bytes_total
+                        else:
+                            # Unknown size — pulse between 0.1 and 0.9
+                            self._dl_progress = min(0.9, self._dl_progress + 0.04)
+
+                    raw = b"".join(chunks).decode("utf-8")
+
+                self._dl_progress = 1.0   # snap to full before parsing
+
+                data = json.loads(raw)
+                puzzles_raw = data.get("puzzles", [])
+
+                existing_keys = self.assets.get_existing_lichess_fens()
+                saved = 0
+
+                for entry in puzzles_raw:
+                    pz      = entry.get("puzzle", {})
+                    game    = entry.get("game", {})
+                    fen     = pz.get("fen") or game.get("fen", "")
+                    solution = pz.get("solution", [])
+                    pid     = pz.get("id", "?")
+                    rating  = pz.get("rating", 1500)
+                    themes  = pz.get("themes", [])
+
+                    if not fen or not solution:
+                        continue
+
+                    # Validate FEN
+                    try: _chess.Board(fen)
+                    except Exception: continue
+
+                    fen_key = " ".join(fen.split()[:3])
+                    if fen_key in existing_keys:
+                        continue
+
+                    theme_str = ", ".join(themes[:3]) if themes else "attraction"
+                    name = f"Lichess #{pid}  ★{rating}  [{theme_str}]"
+
+                    ok = self.assets.save_lichess_puzzle(
+                        fen=fen, name=name, solution_uci=solution, rating=rating)
+                    if ok:
+                        existing_keys.add(fen_key)
+                        saved += 1
+
+                self.assets.refresh_puzzles()
+                self._sidecar = self.assets.get_lichess_sidecar()
+
+                if saved > 0:
+                    self._dl_status = f"done — {saved} puzzles added!"
+                    self._dl_count += saved
+                    self.parent.add_chat(
+                        "System", f"Downloaded {saved} Lichess attraction puzzles. See Unsolved tab.")
+                else:
+                    self._dl_status = "done — all already saved"
+
+            except Exception as e:
+                self._dl_status = f"error: {str(e)[:50]}"
+                self._dl_progress = 0.0
+                print(f"Lichess download error: {e}")
+
+        threading.Thread(target=_fetch, daemon=True).start()
 
 # =============================================================================
-#  SAVE BRILLIANT POPUP
+#  SAVE MATE PUZZLE POPUP
 # =============================================================================
-# In popups.py
-
-class SaveBrilliantPopup(BasePopup):
-    def __init__(self, parent, brilliant_fens):
-        super().__init__(parent, 550, 400)  # Increased height slightly
-        self.fens = brilliant_fens
+class SaveMatePopup(BasePopup):
+    def __init__(self, parent, mate_puzzles):
+        super().__init__(parent, 550, 400)
+        self.puzzles = mate_puzzles
         self.current_idx = 0
         self.btn_save = None
         self.btn_next = None
-        
-        # Checkbox states
         self.do_not_save_all = False
         self.save_all = False
-        
-        # Rects for checkboxes
         self.chk_nosave_rect = None
         self.chk_saveall_rect = None
 
     def draw(self, screen, fb, fm):
         # Dim background
         ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
-        ov.fill((0, 0, 0, 180))
+        ov.fill((0, 0, 0, 160))
         screen.blit(ov, (0, 0))
         
-        # Main Box
         cx, cy = (screen.get_width() - self.w)//2, (screen.get_height() - self.h)//2
         self.rect = pygame.Rect(cx, cy, self.w, self.h)
         
-        pygame.draw.rect(screen, (255, 255, 255), self.rect, border_radius=15)
-        pygame.draw.rect(screen, (200, 200, 200), self.rect, 2, border_radius=15)
+        shadow = self.rect.copy(); shadow.y += 8
+        pygame.draw.rect(screen, (0,0,0,50), shadow, border_radius=20)
+        pygame.draw.rect(screen, (252, 252, 254), self.rect, border_radius=16)
+        pygame.draw.rect(screen, (210, 210, 215), self.rect, 2, border_radius=16)
         
-        # Icon
-        ic = self.parent.assets.icons.get("brilliant")
-        if ic: screen.blit(pygame.transform.smoothscale(ic, (60,60)), (cx+245, cy+20))
+        # --- NEW: GENERATED ICON (White Hashtag in Dark Black Circle) ---
+        icon_center = (cx + self.w//2, cy + 55)
+        pygame.draw.circle(screen, (30, 30, 35), icon_center, 32)
+        pygame.draw.circle(screen, (60, 60, 70), icon_center, 32, 2)
+        hash_txt = self.parent.font_huge.render("#", True, (255, 255, 255))
+        screen.blit(hash_txt, (icon_center[0] - hash_txt.get_width()//2, icon_center[1] - hash_txt.get_height()//2 - 4))
         
         # Title & Info
-        title = fb.render("Brilliant Move Found!", True, (20, 160, 20))
-        screen.blit(title, (cx + (self.w - title.get_width())//2, cy + 90))
+        title = fb.render("Checkmate Puzzle Found!", True, (40, 180, 40))
+        screen.blit(title, (cx + (self.w - title.get_width())//2, cy + 105))
         
-        msg = fm.render(f"Puzzle {self.current_idx+1} of {len(self.fens)}", True, (80, 80, 80))
-        screen.blit(msg, (cx + (self.w - msg.get_width())//2, cy + 130))
+        p_type = self.puzzles[self.current_idx].get("type", "Mate Puzzle")
+        msg = fm.render(f"{p_type} - Puzzle {self.current_idx+1} of {len(self.puzzles)}", True, (80, 80, 80))
+        screen.blit(msg, (cx + (self.w - msg.get_width())//2, cy + 135))
         
         # --- CHECKBOXES ---
         chk_y = cy + 180
         
-        # Option 1: Save All
-        self.chk_saveall_rect = pygame.Rect(cx + 60, chk_y, 20, 20)
-        pygame.draw.rect(screen, (200, 200, 200), self.chk_saveall_rect, 2)
+        chk_x = cx + 60
+        self.chk_saveall_rect = pygame.Rect(chk_x, chk_y, 20, 20)
+        pygame.draw.rect(screen, (200, 200, 200), self.chk_saveall_rect, 2, border_radius=4)
         if self.save_all:
-            pygame.draw.rect(screen, (40, 40, 40), (cx + 64, chk_y + 4, 12, 12))
-        screen.blit(fm.render("Save ALL as puzzles", True, (0,0,0)), (cx + 90, chk_y))
+            pygame.draw.rect(screen, (40, 180, 40), (chk_x + 4, chk_y + 4, 12, 12), border_radius=2)
+        lbl = fm.render("Autosave ALL mates as puzzles", True, (40, 40, 40))
+        screen.blit(lbl, (chk_x + 28, chk_y + (20 - lbl.get_height())//2))
 
-        # Option 2: Do Not Save Any
-        self.chk_nosave_rect = pygame.Rect(cx + 60, chk_y + 40, 20, 20)
-        pygame.draw.rect(screen, (200, 200, 200), self.chk_nosave_rect, 2)
+        self.chk_nosave_rect = pygame.Rect(chk_x, chk_y + 38, 20, 20)
+        pygame.draw.rect(screen, (200, 200, 200), self.chk_nosave_rect, 2, border_radius=4)
         if self.do_not_save_all:
-             pygame.draw.rect(screen, (40, 40, 40), (cx + 64, chk_y + 44, 12, 12))
-        screen.blit(fm.render("Discard ALL (Don't Save)", True, (0,0,0)), (cx + 90, chk_y + 40))
+            pygame.draw.rect(screen, (200, 60, 60), (chk_x + 4, chk_y + 42, 12, 12), border_radius=2)
+        lbl = fm.render("Discard ALL (Don't Save)", True, (40, 40, 40))
+        screen.blit(lbl, (chk_x + 28, chk_y + 38 + (20 - lbl.get_height())//2))
 
-        # Buttons
-        btn_y = cy + 280
-        self.btn_save = pygame.Rect(cx + 60, btn_y, 180, 45)
-        
-        # Logic: If "Discard All" is checked, this button becomes disabled/grey
+        #Buttons
+        btn_w, btn_h = 185, 45
+        gap = 20
+        total_btn = btn_w * 2 + gap
+        btn_x = cx + (self.w - total_btn) // 2
+        btn_y = cy + 295
+
+        self.btn_save = pygame.Rect(btn_x, btn_y, btn_w, btn_h)
         if self.do_not_save_all:
-             pygame.draw.rect(screen, (200, 200, 200), self.btn_save, border_radius=8)
-             save_txt = "Skip All"
+            pygame.draw.rect(screen, (200, 200, 200), self.btn_save, border_radius=8)
+            save_txt = "Skip All"
         elif self.save_all:
-             pygame.draw.rect(screen, (60, 180, 60), self.btn_save, border_radius=8)
-             save_txt = "Finish & Save"
+            pygame.draw.rect(screen, (60, 180, 60), self.btn_save, border_radius=8)
+            save_txt = "Finish & Save"
         else:
-             pygame.draw.rect(screen, (60, 180, 60), self.btn_save, border_radius=8)
-             save_txt = "Save This One"
-             
-        txt_surf = fb.render(save_txt, True, (255,255,255))
-        screen.blit(txt_surf, (self.btn_save.centerx - txt_surf.get_width()//2, self.btn_save.centery - txt_surf.get_height()//2))
+            pygame.draw.rect(screen, (60, 180, 60), self.btn_save, border_radius=8)
+            save_txt = "Save This One"
+        txt_surf = fb.render(save_txt, True, (255, 255, 255))
+        screen.blit(txt_surf, (self.btn_save.centerx - txt_surf.get_width()//2,
+                                self.btn_save.centery - txt_surf.get_height()//2))
 
-        self.btn_next = pygame.Rect(cx + 260, btn_y, 180, 45)
+        self.btn_next = pygame.Rect(btn_x + btn_w + gap, btn_y, btn_w, btn_h)
         pygame.draw.rect(screen, (200, 60, 60), self.btn_next, border_radius=8)
-        
-        # Text changes based on context
         next_txt = "Next / Skip"
         if self.save_all or self.do_not_save_all: next_txt = "Confirm"
-        elif self.current_idx == len(self.fens) - 1: next_txt = "Close"
-            
-        txt_surf2 = fb.render(next_txt, True, (255,255,255))
-        screen.blit(txt_surf2, (self.btn_next.centerx - txt_surf2.get_width()//2, self.btn_next.centery - txt_surf2.get_height()//2))
-        
-        self.close_btn = pygame.Rect(cx + self.w - 40, cy + 10, 30, 30)
+        elif self.current_idx == len(self.puzzles) - 1: next_txt = "Close"
+        txt_surf2 = fb.render(next_txt, True, (255, 255, 255))
+        screen.blit(txt_surf2, (self.btn_next.centerx - txt_surf2.get_width()//2,
+                                 self.btn_next.centery - txt_surf2.get_height()//2))
+
+        self.close_btn = pygame.Rect(cx + self.w - 46, cy + 18, 30, 30)
 
     def handle_click(self, pos):
-        # 1. Handle Checkboxes (Exclusive logic)
         if self.chk_saveall_rect.collidepoint(pos):
             self.save_all = not self.save_all
-            if self.save_all: self.do_not_save_all = False # Uncheck other
+            if self.save_all: self.do_not_save_all = False
             return
 
         if self.chk_nosave_rect.collidepoint(pos):
             self.do_not_save_all = not self.do_not_save_all
-            if self.do_not_save_all: self.save_all = False # Uncheck other
+            if self.do_not_save_all: self.save_all = False
             return
 
-        # 2. Handle Save Action
         if self.btn_save.collidepoint(pos):
             if self.do_not_save_all:
-                self.active = False # Just close
+                self.active = False
             elif self.save_all:
-                # Save REMAINING puzzles
-                for i in range(self.current_idx, len(self.fens)):
+                for i in range(self.current_idx, len(self.puzzles)):
                     self.save_puzzle(i)
                 self.active = False
             else:
-                # Save just this one
                 self.save_puzzle(self.current_idx)
                 self.advance()
 
-        # 3. Handle Next/Skip
         elif self.btn_next.collidepoint(pos) or (self.close_btn and self.close_btn.collidepoint(pos)):
             if self.save_all:
-                # User clicked "Confirm" with Save All checked
-                for i in range(self.current_idx, len(self.fens)):
+                for i in range(self.current_idx, len(self.puzzles)):
                     self.save_puzzle(i)
                 self.active = False
             elif self.do_not_save_all:
-                # User clicked "Confirm" with Discard All checked
                 self.active = False
             else:
-                # Just skip this one
                 self.advance()
             
     def save_puzzle(self, idx):
-        if idx < len(self.fens):
-            fen = self.fens[idx]
-            self.parent.assets.save_appmade_puzzle(fen, f"Brilliant Move {random.randint(100,999)}")
+        if idx < len(self.puzzles):
+            puz = self.puzzles[idx]
+            new_fen = puz["fen"]
+            new_key = " ".join(new_fen.split()[:3])
+            existing = getattr(self.parent.assets, 'appmade_puzzles', [])
+            for ex in existing:
+                ex_key = " ".join(ex.get("fen", "").split()[:3])
+                if ex_key == new_key:
+                    pp = getattr(self.parent, 'puzzle_popup', None)
+                    if pp and pp.active:
+                        pp._toast_msg = "Puzzle already exists!"
+                        pp._toast_timer = pp._TOAST_DURATION
+                    return
+            self.parent.assets.save_appmade_puzzle(new_fen, f"{puz['type']} {random.randint(100,999)}")
 
     def advance(self):
         self.current_idx += 1
-        if self.current_idx >= len(self.fens):
+        if self.current_idx >= len(self.puzzles):
             self.active = False
 
 # =============================================================================
-#  ENGINE POPUP
+#  ENGINE POPUP  (3-column: engine list | core settings | full UCI options)
 # =============================================================================
 class EnginePopup(BasePopup):
     def __init__(self, parent):
-        super().__init__(parent, 750, 550) # Taller and wider for the dual-pane layout
+        super().__init__(parent, 980, 680)
         
-        # --- FIX: Inject Lichess Cloud as a Virtual Engine ---
         self.engines = list(self.parent.assets.engines)
         if not any(e["path"] == "lichess_cloud" for e in self.engines):
             self.engines.insert(0, {"name": "Lichess Cloud API", "path": "lichess_cloud"})
-            
-        self.scroll = 0
-        self.zones = []
+
+        self.scroll       = 0
+        self.zones        = []
         self.selected_idx = 0
-        
-        # Find current active engine index
+        self.uci_options  = []
+        self.uci_scroll   = 0
+        self._uci_fetched = False
+        self._fetch_token = 0  # incremented each time a new fetch starts; threads check this
+
         curr_path = self.parent.current_engine_info.get("path", "")
         for i, e in enumerate(self.engines):
             if e["path"] == curr_path:
-                self.selected_idx = i
-                break
-                
-        # Preserve all vital settings from the old code
-        self.engine_settings = {
-            'depth': getattr(parent, 'max_depth', 20),
-            'threads': getattr(parent, 'engine_threads', 4),
-            'hash_size': getattr(parent, 'engine_hash', 512),
-            'use_cloud': getattr(parent, 'use_cloud_analysis', True),
-            'multi_pv': getattr(parent, 'engine_multipv', 3)
+                self.selected_idx = i; break
+
+        self._engines_json = os.path.join("assets", "engines.json")
+        self._all_configs  = self._load_engines_json()
+        self.engine_settings = self._settings_for(self.selected_idx)
+        self._fetch_uci_async()
+
+    # ------------------------------------------------------------------ json helpers
+    def _load_engines_json(self):
+        import json
+        try:
+            if os.path.exists(self._engines_json):
+                with open(self._engines_json, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception: pass
+        return {}
+
+    def _save_engines_json(self):
+        import json
+        try:
+            os.makedirs(os.path.dirname(self._engines_json), exist_ok=True)
+            with open(self._engines_json, "w", encoding="utf-8") as f:
+                json.dump(self._all_configs, f, indent=2)
+        except Exception as e: print(f"engines.json save error: {e}")
+
+    def _settings_for(self, idx):
+        key   = self.engines[idx].get("path","") if 0 <= idx < len(self.engines) else ""
+        saved = self._all_configs.get(key, {})
+        return {
+            'depth':    saved.get('depth',    getattr(self.parent,'max_depth',20)),
+            'threads':  saved.get('threads',  getattr(self.parent,'engine_threads',4)),
+            'hash_size':saved.get('hash_size',getattr(self.parent,'engine_hash',512)),
+            'use_cloud':saved.get('use_cloud',getattr(self.parent,'use_cloud_analysis',True)),
+            'multi_pv': saved.get('multi_pv', getattr(self.parent,'engine_multipv',3)),
         }
-        
+
+    def _fetch_uci_async(self):
+        self._uci_fetched = False
+        self.uci_options  = []
+        self._fetch_token += 1          # invalidate any running thread
+        my_token = self._fetch_token
+        idx  = self.selected_idx
+        if idx < 0 or idx >= len(self.engines): return
+        path = self.engines[idx].get("path","")
+        if not path or path == "lichess_cloud":
+            self._uci_fetched = True; return
+
+        def _probe():
+            import chess.engine
+            opts = []
+            try:
+                eng = chess.engine.SimpleEngine.popen_uci(path)
+                skip = {"uci_analysemode","uci_chess960","uci_limitstrength","ponder","multipv"}
+                for name, opt in eng.options.items():
+                    if name.lower() in skip: continue
+                    saved_uci = self._all_configs.get(path,{}).get("uci_options",{})
+                    entry = {
+                        "name":    name,
+                        "type":    str(opt.type),
+                        "default": opt.default,
+                        "min":     getattr(opt,"min",None),
+                        "max":     getattr(opt,"max",None),
+                        "var":     list(getattr(opt,"var",[]) or []),
+                        "value":   saved_uci.get(name, opt.default),
+                    }
+                    opts.append(entry)
+                eng.quit()
+            except Exception as e: print(f"UCI probe: {e}")
+            # Only commit if we are still the current request
+            if my_token == self._fetch_token:
+                self.uci_options  = opts
+                self._uci_fetched = True
+
+        import threading
+        threading.Thread(target=_probe, daemon=True).start()
+
+    def _persist_uci(self):
+        if not self.engines: return
+        path = self.engines[self.selected_idx].get("path","")
+        if not path or path == "lichess_cloud": return
+        if path not in self._all_configs: self._all_configs[path] = {}
+        self._all_configs[path]["uci_options"] = {o["name"]: o["value"] for o in self.uci_options}
+        self._save_engines_json()
+        self.parent.status_msg = "UCI options saved!"
+
     def has_nnue(self, path):
         """Checks if the corresponding .nnue file exists in the engines/nnue folder"""
         if not path: return False
@@ -447,258 +797,293 @@ class EnginePopup(BasePopup):
     def draw(self, screen, fb, fm):
         self.draw_bg(screen, "Engine Management & Configuration", fb)
         self.zones = []
-        
-        # Layout Setup
-        list_rect = pygame.Rect(self.rect.x + 20, self.rect.y + 70, 320, 390)
-        settings_rect = pygame.Rect(self.rect.x + 360, self.rect.y + 70, 350, 390)
-        
-        # ==========================================
-        # --- LEFT PANE: SCROLLABLE ENGINE LIST ---
-        # ==========================================
-        pygame.draw.rect(screen, (245, 245, 250), list_rect, border_radius=8)
-        pygame.draw.rect(screen, (200, 200, 210), list_rect, 1, border_radius=8)
-        screen.blit(fb.render("Available Engines", True, (60, 60, 70)), (list_rect.x + 15, list_rect.y + 15))
-        
-        engine_list_y = list_rect.y + 45
-        clip_rect = pygame.Rect(list_rect.x, engine_list_y, list_rect.width, list_rect.height - 45)
-        screen.set_clip(clip_rect)
-        
-        total_h = len(self.engines) * 55
-        max_scroll = max(0, total_h - clip_rect.height)
-        self.scroll = max(0, min(self.scroll, max_scroll))
-        
-        # Check network status for Lichess Cloud API
-        is_online = True
-        if hasattr(self.parent, 'network_monitor') and self.parent.network_monitor:
-            is_online = self.parent.network_monitor.check_connection()
+        PAD  = 18
+        top_y = self.rect.y + 70
+        bot_y = self.rect.bottom - 64
 
-        ey = clip_rect.y - self.scroll
+        col1_w = 220
+        col2_w = 210
+        col3_w = self.rect.width - col1_w - col2_w - PAD * 4
+
+        list_r = pygame.Rect(self.rect.x + PAD, top_y, col1_w, bot_y - top_y)
+        set_r  = pygame.Rect(list_r.right + PAD, top_y, col2_w, bot_y - top_y)
+        uci_r  = pygame.Rect(set_r.right + PAD, top_y, col3_w, bot_y - top_y)
+
+        # ── Col 1: engine list ────────────────────────────────────────────────
+        pygame.draw.rect(screen, (245,245,250), list_r, border_radius=8)
+        pygame.draw.rect(screen, (200,200,210), list_r, 1, border_radius=8)
+        screen.blit(fb.render("Engines", True,(60,60,70)), (list_r.x+12, list_r.y+10))
+
+        is_online = not (hasattr(self.parent,'network_monitor') and self.parent.network_monitor
+                         and not self.parent.network_monitor.check_connection())
+        cli = pygame.Rect(list_r.x, list_r.y+38, list_r.width, list_r.height-38)
+        screen.set_clip(cli)
+        total_h = len(self.engines)*52; max_s = max(0,total_h-cli.height)
+        self.scroll = max(0,min(self.scroll,max_s))
+        ey = cli.y - self.scroll
         for i, eng in enumerate(self.engines):
-            if ey + 55 < clip_rect.y: ey += 55; continue
-            if ey > clip_rect.bottom: break
-            
-            is_lichess = (eng["path"] == "lichess_cloud")
-            is_disabled = is_lichess and not is_online
-            
-            er = pygame.Rect(clip_rect.x + 10, ey, clip_rect.width - 20, 48)
-            is_hover = er.collidepoint(pygame.mouse.get_pos()) and not is_disabled
-            is_sel = (i == self.selected_idx)
-            
-            if is_disabled:
-                bg = (240, 240, 240)
-            else:
-                bg = (220, 230, 255) if is_sel else ((235, 240, 245) if is_hover else (255, 255, 255))
-                
-            pygame.draw.rect(screen, bg, er, border_radius=6)
-            if is_sel and not is_disabled: 
-                pygame.draw.rect(screen, (100, 150, 220), er, 2, border_radius=6)
-            elif is_disabled:
-                pygame.draw.rect(screen, (200, 200, 200), er, 1, border_radius=6)
-            
-            if is_disabled:
-                name_color = (150, 150, 150)
-            else:
-                name_color = (20, 20, 20) if is_sel else (80, 80, 80)
-                
-            screen.blit(fm.render(eng["name"], True, name_color), (er.x + 15, er.y + 5))
-            
-            if is_disabled:
-                path_text = "Offline (No Internet)"
-                path_col = (200, 100, 100)
-            else:
-                short_path = eng["path"][-30:] if len(eng["path"]) > 30 else eng["path"]
-                path_text = f"...{short_path}" if not is_lichess else "Remote Cloud Database"
-                path_col = (120, 120, 120)
-                
-            screen.blit(self.parent.font_s.render(path_text, True, path_col), (er.x + 15, er.y + 25))
-            
-            if not is_disabled:
-                self.zones.append((er, "select_engine", i))
-            ey += 55
-            
+            if ey+52<cli.y: ey+=52; continue
+            if ey>cli.bottom: break
+            is_lc = eng["path"]=="lichess_cloud"
+            is_dis = is_lc and not is_online
+            er = pygame.Rect(cli.x+8, ey, cli.width-16, 46)
+            is_sel = (i==self.selected_idx)
+            bg = (240,240,240) if is_dis else ((218,230,255) if is_sel else ((232,238,248) if er.collidepoint(pygame.mouse.get_pos()) else (255,255,255)))
+            pygame.draw.rect(screen,bg,er,border_radius=6)
+            if is_sel and not is_dis: pygame.draw.rect(screen,(100,150,220),er,2,border_radius=6)
+            nc = (150,150,150) if is_dis else ((20,20,20) if is_sel else (70,70,70))
+            _ename = eng["name"] if len(eng["name"]) <= 18 else eng["name"][:17] + "…"
+            screen.blit(fm.render(_ename,True,nc),(er.x+10,er.y+4))
+            sp = eng["path"][-28:] if len(eng.get("path",""))>28 else eng.get("path","")
+            pt = "Offline" if is_dis else ("Cloud API" if is_lc else f"…{sp}")
+            pc = (200,80,80) if is_dis else (120,120,130)
+            screen.blit(self.parent.font_s.render(pt,True,pc),(er.x+10,er.y+24))
+            if not is_dis: self.zones.append((er,"select_engine",i))
+            ey+=52
         screen.set_clip(None)
-            
-        # ==========================================
-        # --- RIGHT PANE: SETTINGS & STATUS ---
-        # ==========================================
-        pygame.draw.rect(screen, (250, 250, 252), settings_rect, border_radius=8)
-        pygame.draw.rect(screen, (200, 200, 210), settings_rect, 1, border_radius=8)
-        screen.blit(fb.render("Configuration", True, (60, 60, 70)), (settings_rect.x + 15, settings_rect.y + 15))
-        
-        # NNUE & Syzygy Status Badges
-        sel_path = self.engines[self.selected_idx]["path"] if self.engines else ""
-        nnue_ok = self.has_nnue(sel_path)
-        syz_ok = self.has_syzygy()
-        
-        sy = settings_rect.y + 50
-        self._draw_status_pill(screen, "NNUE", nnue_ok, settings_rect.x + 15, sy)
-        self._draw_status_pill(screen, "Syzygy", syz_ok, settings_rect.x + 120, sy)
-        
-        sy += 45
-        
-        # Configuration Spinners (Replaces Pygame text typing for better UI)
-        sy = self._draw_spinner(screen, fm, "Analysis Depth", self.engine_settings['depth'], 1, 65, settings_rect.x + 15, sy, "depth")
-        sy = self._draw_spinner(screen, fm, "CPU Threads", self.engine_settings['threads'], 1, 64, settings_rect.x + 15, sy, "threads")
-        sy = self._draw_spinner(screen, fm, "Hash Size (MB)", self.engine_settings['hash_size'], 16, 8192, settings_rect.x + 15, sy, "hash", step=64)
-        sy = self._draw_spinner(screen, fm, "MultiPV Lines", self.engine_settings['multi_pv'], 1, 10, settings_rect.x + 15, sy, "multipv")
-        
-        # Lichess Cloud Toggle
-        cloud_rect = pygame.Rect(settings_rect.x + 15, sy + 10, 20, 20)
-        col = (80, 180, 80) if self.engine_settings['use_cloud'] else (200, 200, 200)
-        pygame.draw.rect(screen, col, cloud_rect, border_radius=4)
+
+        # ── Col 2: core settings ──────────────────────────────────────────────
+        pygame.draw.rect(screen,(250,250,252),set_r,border_radius=8)
+        pygame.draw.rect(screen,(200,200,210),set_r,1,border_radius=8)
+        screen.blit(fb.render("Core Settings",True,(60,60,70)),(set_r.x+12,set_r.y+10))
+
+        sel_path = self.engines[self.selected_idx]["path"] if self.engines and 0 <= self.selected_idx < len(self.engines) else ""
+        sy = set_r.y + 42
+        self._draw_status_pill(screen,"NNUE",   self.has_nnue(sel_path), set_r.x+12, sy)
+        self._draw_status_pill(screen,"Syzygy", self.has_syzygy(),        set_r.x+12, sy+28)
+        sy += 66
+
+        _is_cloud = sel_path == "lichess_cloud"
+        sy = self._draw_spinner(screen,fm,"Depth",   self.engine_settings['depth'],   1,65,  set_r.x+12,sy,"depth",   disabled=_is_cloud)
+        sy = self._draw_spinner(screen,fm,"Threads",  self.engine_settings['threads'],  1,64,  set_r.x+12,sy,"threads", disabled=_is_cloud)
+        sy = self._draw_spinner(screen,fm,"Hash MB",  self.engine_settings['hash_size'],16,8192,set_r.x+12,sy,"hash",   step=64, disabled=_is_cloud)
+        sy = self._draw_spinner(screen,fm,"MultiPV",  self.engine_settings['multi_pv'], 1,10,  set_r.x+12,sy,"multipv", disabled=_is_cloud)
+
+        cr = pygame.Rect(set_r.x+12, sy+8, 18, 18)
+        cc = (80,180,80) if self.engine_settings['use_cloud'] else (200,200,200)
+        pygame.draw.rect(screen,cc,cr,border_radius=4)
         if self.engine_settings['use_cloud']:
-            pygame.draw.line(screen, (255,255,255), (cloud_rect.x+4, cloud_rect.centery), (cloud_rect.centerx-2, cloud_rect.bottom-4), 2)
-            pygame.draw.line(screen, (255,255,255), (cloud_rect.centerx-2, cloud_rect.bottom-4), (cloud_rect.right-4, cloud_rect.y+4), 2)
-        screen.blit(fm.render("Use Lichess Cloud Analysis", True, (60, 60, 60)), (cloud_rect.right + 10, cloud_rect.y))
-        self.zones.append((cloud_rect, "toggle_cloud", None))
-        
-        # Action Buttons
-        by = settings_rect.bottom - 55
-        
-        # Save JSON Button (From old code)
-        btn_save = pygame.Rect(settings_rect.x + 15, by, 100, 40)
-        col_save = (100, 150, 200) if btn_save.collidepoint(pygame.mouse.get_pos()) else (80, 130, 180)
-        pygame.draw.rect(screen, col_save, btn_save, border_radius=8)
-        t_save = fm.render("Save File", True, (255, 255, 255))
-        screen.blit(t_save, (btn_save.centerx - t_save.get_width()//2, btn_save.centery - t_save.get_height()//2))
-        self.zones.append((btn_save, "save", None))
-        
-        # Apply & Restart Button
-        btn_apply = pygame.Rect(settings_rect.right - 165, by, 150, 40)
-        col_apply = (60, 180, 60) if btn_apply.collidepoint(pygame.mouse.get_pos()) else (50, 160, 50)
-        pygame.draw.rect(screen, col_apply, btn_apply, border_radius=8)
-        t_app = fm.render("Apply & Restart", True, (255, 255, 255))
-        screen.blit(t_app, (btn_apply.centerx - t_app.get_width()//2, btn_apply.centery - t_app.get_height()//2))
-        self.zones.append((btn_apply, "apply", None))
+            pygame.draw.line(screen,(255,255,255),(cr.x+3,cr.centery),(cr.centerx-1,cr.bottom-3),2)
+            pygame.draw.line(screen,(255,255,255),(cr.centerx-1,cr.bottom-3),(cr.right-3,cr.y+3),2)
+        screen.blit(self.parent.font_s.render("Use Lichess Cloud",True,(60,60,60)),(cr.right+8,cr.y+1))
+        self.zones.append((cr,"toggle_cloud",None))
+
+        apply_r = pygame.Rect(set_r.x+12, bot_y-46, set_r.width-24, 38)
+        ac = (55,175,55) if apply_r.collidepoint(pygame.mouse.get_pos()) else (45,155,45)
+        pygame.draw.rect(screen,ac,apply_r,border_radius=8)
+        at = fm.render("Apply & Restart",True,(255,255,255))
+        screen.blit(at,(apply_r.centerx-at.get_width()//2,apply_r.centery-at.get_height()//2))
+        self.zones.append((apply_r,"apply",None))
+
+        # ── Col 3: UCI options ────────────────────────────────────────────────
+        pygame.draw.rect(screen,(248,248,252),uci_r,border_radius=8)
+        pygame.draw.rect(screen,(200,200,210),uci_r,1,border_radius=8)
+        screen.blit(fb.render("Engine Options (UCI)",True,(60,60,70)),(uci_r.x+12,uci_r.y+10))
+
+        if not self._uci_fetched:
+            screen.blit(fm.render("Probing engine…",True,(140,140,160)),(uci_r.x+18,uci_r.y+50))
+        elif not self.uci_options:
+            screen.blit(fm.render("No configurable options.",True,(160,160,165)),(uci_r.x+18,uci_r.y+50))
+        else:
+            uc = pygame.Rect(uci_r.x, uci_r.y+38, uci_r.width, uci_r.height-88)
+            screen.set_clip(uc)
+            row_h = 34
+            max_us = max(0, len(self.uci_options)*row_h - uc.height)
+            self.uci_scroll = max(0,min(self.uci_scroll,max_us))
+            uy = uc.y - self.uci_scroll
+            mpos = pygame.mouse.get_pos()
+            for i, opt in enumerate(self.uci_options):
+                if uy+row_h<uc.y: uy+=row_h; continue
+                if uy>uc.bottom: break
+                rr = pygame.Rect(uci_r.x+5, uy+2, uci_r.width-10, row_h-4)
+                bg2 = (228,236,255) if rr.collidepoint(mpos) else ((240,240,250) if i%2==0 else (252,252,255))
+                pygame.draw.rect(screen,bg2,rr,border_radius=4)
+                ns = self.parent.font_s.render(opt["name"],True,(40,40,52))
+                screen.blit(ns,(rr.x+7, rr.y+(row_h-4-ns.get_height())//2))
+                vs = str(opt["value"]) if opt["value"] is not None else str(opt["default"])
+                ot = opt["type"]
+                if ot=="check":
+                    on = str(opt["value"]).lower() in("true","1","yes")
+                    pill = pygame.Rect(rr.right-62, rr.y+5, 54, 24)
+                    pygame.draw.rect(screen,(70,175,70) if on else (175,175,175),pill,border_radius=12)
+                    pt2 = self.parent.font_s.render("ON" if on else "OFF",True,(255,255,255))
+                    screen.blit(pt2,(pill.centerx-pt2.get_width()//2,pill.centery-pt2.get_height()//2))
+                    self.zones.append((pill,"uci_toggle",i))
+                elif ot=="spin" and opt["min"] is not None:
+                    bm = pygame.Rect(rr.right-108, rr.y+5, 24, 24)
+                    bp = pygame.Rect(rr.right-28,  rr.y+5, 24, 24)
+                    vb = pygame.Rect(bm.right+3,   rr.y+5, bp.left - bm.right - 6, 24)
+                    pygame.draw.rect(screen,(208,208,215),bm,border_radius=5)
+                    pygame.draw.rect(screen,(208,208,215),bp,border_radius=5)
+                    pygame.draw.rect(screen,(244,244,250),vb,border_radius=4)
+                    pygame.draw.rect(screen,(210,210,220),vb,1,border_radius=4)
+                    for _r3,_t3 in[(bm,"−"),(bp,"+")]:
+                        _s3=self.parent.font_s.render(_t3,True,(40,40,40))
+                        screen.blit(_s3,(_r3.centerx-_s3.get_width()//2,_r3.centery-_s3.get_height()//2))
+                    _vs=self.parent.font_s.render(vs,True,(20,20,20))
+                    screen.blit(_vs,(vb.centerx-_vs.get_width()//2,vb.centery-_vs.get_height()//2))
+                    self.zones.append((bm,"uci_dec",i)); self.zones.append((bp,"uci_inc",i))
+                elif ot=="combo" and opt["var"]:
+                    al  = pygame.Rect(rr.right-108, rr.y+5, 24, 24)
+                    ar  = pygame.Rect(rr.right-28,  rr.y+5, 24, 24)
+                    vb2 = pygame.Rect(al.right+3,   rr.y+5, ar.left - al.right - 6, 24)
+                    pygame.draw.rect(screen,(208,208,215),al,border_radius=5)
+                    pygame.draw.rect(screen,(208,208,215),ar,border_radius=5)
+                    pygame.draw.rect(screen,(244,244,250),vb2,border_radius=4)
+                    pygame.draw.rect(screen,(210,210,220),vb2,1,border_radius=4)
+                    for _r4,_t4 in[(al,"◀"),(ar,"▶")]:
+                        _s4=self.parent.font_s.render(_t4,True,(40,40,40))
+                        screen.blit(_s4,(_r4.centerx-_s4.get_width()//2,_r4.centery-_s4.get_height()//2))
+                    _vs2=self.parent.font_s.render(str(opt["value"])[:8],True,(20,20,20))
+                    screen.blit(_vs2,(vb2.centerx-_vs2.get_width()//2,vb2.centery-_vs2.get_height()//2))
+                    self.zones.append((al,"uci_combo_prev",i)); self.zones.append((ar,"uci_combo_next",i))
+                else:
+                    _vs3=self.parent.font_s.render(vs[:14],True,(90,90,100))
+                    screen.blit(_vs3,(rr.right-_vs3.get_width()-10,rr.y+(row_h-4-_vs3.get_height())//2))
+                uy+=row_h
+            screen.set_clip(None)
+
+            # ── Scrollbar for UCI list ────────────────────────────────────────
+            if max_us > 0:
+                sb_track = pygame.Rect(uci_r.right-8, uc.y, 5, uc.height)
+                pygame.draw.rect(screen, (220,220,228), sb_track, border_radius=3)
+                thumb_h   = max(24, int(uc.height * uc.height / (len(self.uci_options)*row_h)))
+                thumb_y   = uc.y + int((uc.height - thumb_h) * self.uci_scroll / max_us)
+                sb_thumb  = pygame.Rect(uci_r.right-8, thumb_y, 5, thumb_h)
+                pygame.draw.rect(screen, (160,160,175), sb_thumb, border_radius=3)
+
+            save_uci_r = pygame.Rect(uci_r.x+12, bot_y-46, uci_r.width-24, 38)
+            sc2 = (45,110,185) if save_uci_r.collidepoint(pygame.mouse.get_pos()) else (38,95,165)
+            pygame.draw.rect(screen,sc2,save_uci_r,border_radius=8)
+            st2=fm.render("Save UCI Options",True,(255,255,255))
+            screen.blit(st2,(save_uci_r.centerx-st2.get_width()//2,save_uci_r.centery-st2.get_height()//2))
+            self.zones.append((save_uci_r,"save_uci",None))
 
     def _draw_status_pill(self, screen, label, is_active, x, y):
-        color = (80, 180, 80) if is_active else (180, 180, 180)
-        text_color = (255, 255, 255)
-        font = self.parent.font_s
-        surf = font.render(f"{label}: {'ON' if is_active else 'OFF'}", True, text_color)
-        r = pygame.Rect(x, y, surf.get_width() + 20, 26)
-        pygame.draw.rect(screen, color, r, border_radius=13)
-        screen.blit(surf, (x + 10, y + 4))
+        color = (80,180,80) if is_active else (180,180,180)
+        surf  = self.parent.font_s.render(f"{label}: {'ON' if is_active else 'OFF'}", True, (255,255,255))
+        r = pygame.Rect(x, y, surf.get_width()+18, 24)
+        pygame.draw.rect(screen, color, r, border_radius=12)
+        screen.blit(surf, (x+9, r.centery - surf.get_height()//2))
 
-    def _draw_spinner(self, screen, fm, label, value, min_v, max_v, x, y, tag, step=1):
-        screen.blit(fm.render(label, True, (80, 80, 80)), (x, y + 5))
-        
-        btn_minus = pygame.Rect(x + 150, y, 30, 30)
-        pygame.draw.rect(screen, (220, 220, 230), btn_minus, border_radius=4)
-        screen.blit(fm.render("-", True, (40, 40, 40)), (btn_minus.centerx - 4, btn_minus.centery - 8))
-        self.zones.append((btn_minus, "dec", (tag, min_v, step)))
-        
-        val_surf = fm.render(str(value), True, (20, 20, 20))
-        screen.blit(val_surf, (x + 195 - val_surf.get_width()//2, y + 5))
-        
-        btn_plus = pygame.Rect(x + 210, y, 30, 30)
-        pygame.draw.rect(screen, (220, 220, 230), btn_plus, border_radius=4)
-        screen.blit(fm.render("+", True, (40, 40, 40)), (btn_plus.centerx - 6, btn_plus.centery - 8))
-        self.zones.append((btn_plus, "inc", (tag, max_v, step)))
-        
-        return y + 45
+    def _draw_spinner(self, screen, fm, label, value, min_v, max_v, x, y, tag, step=1, disabled=False):
+        lbl_col = (180,180,185) if disabled else (75,75,85)
+        btn_col = (232,232,235) if disabled else (218,218,228)
+        txt_col = (170,170,175) if disabled else (40,40,40)
+        val_col = (180,180,185) if disabled else (20,20,20)
+        screen.blit(fm.render(label, True, lbl_col), (x, y+6))
+        bm = pygame.Rect(x+80,  y+1, 28, 28)
+        bp = pygame.Rect(x+158, y+1, 28, 28)
+        vb = pygame.Rect(bm.right+3, y+1, bp.left - bm.right - 6, 28)
+        pygame.draw.rect(screen, (244,244,250), vb, border_radius=5)
+        pygame.draw.rect(screen, (210,210,220), vb, 1, border_radius=5)
+        for _r,_l in[(bm,"−"),(bp,"+")]:
+            pygame.draw.rect(screen, btn_col, _r, border_radius=5)
+            _s=fm.render(_l, True, txt_col)
+            screen.blit(_s,(_r.centerx-_s.get_width()//2,_r.centery-_s.get_height()//2))
+        vs=fm.render(str(value), True, val_col)
+        screen.blit(vs,(vb.centerx-vs.get_width()//2, vb.y+(vb.height-vs.get_height())//2))
+        if not disabled:
+            self.zones.append((bm,"dec",(tag,min_v,step)))
+            self.zones.append((bp,"inc",(tag,max_v,step)))
+        return y+42
 
     def handle_scroll(self, e):
-        # Allow scrolling in the left pane engine list
-        if e.button == 4: self.scroll -= 40
-        elif e.button == 5: self.scroll += 40
+        uci_left = self.rect.x + 18 + 220 + 18 + 210 + 18
+        if pygame.mouse.get_pos()[0] > uci_left:
+            if e.button==4: self.uci_scroll=max(0,self.uci_scroll-30)
+            elif e.button==5: self.uci_scroll+=30
+        else:
+            if e.button==4: self.scroll=max(0,self.scroll-40)
+            elif e.button==5: self.scroll+=40
 
     def handle_click(self, pos):
-        if self.close_btn and self.close_btn.collidepoint(pos):
-            self.active = False
-            return
-            
+        if self.close_btn and self.close_btn.collidepoint(pos): self.active=False; return
         for rect, action, data in self.zones:
             if rect.collidepoint(pos):
-                if action == "select_engine":
-                    self.selected_idx = data
-                elif action == "dec":
-                    tag, min_v, step = data
-                    if tag == "depth": self.engine_settings['depth'] = max(min_v, self.engine_settings['depth'] - step)
-                    elif tag == "threads": self.engine_settings['threads'] = max(min_v, self.engine_settings['threads'] - step)
-                    elif tag == "hash": self.engine_settings['hash_size'] = max(min_v, self.engine_settings['hash_size'] - step)
-                    elif tag == "multipv": self.engine_settings['multi_pv'] = max(min_v, self.engine_settings['multi_pv'] - step)
-                elif action == "inc":
-                    tag, max_v, step = data
-                    if tag == "depth": self.engine_settings['depth'] = min(max_v, self.engine_settings['depth'] + step)
-                    elif tag == "threads": self.engine_settings['threads'] = min(max_v, self.engine_settings['threads'] + step)
-                    elif tag == "hash": self.engine_settings['hash_size'] = min(max_v, self.engine_settings['hash_size'] + step)
-                    elif tag == "multipv": self.engine_settings['multi_pv'] = min(max_v, self.engine_settings['multi_pv'] + step)
-                elif action == "toggle_cloud":
-                    self.engine_settings['use_cloud'] = not self.engine_settings['use_cloud']
-                elif action == "save":
-                    self.save_engine_settings()
-                elif action == "apply":
+                if action=="select_engine":
+                    self.selected_idx=data
+                    self.engine_settings=self._settings_for(data)
+                    self.uci_options=[]; self._uci_fetched=False
+                    self.uci_scroll = 0
+                    self._fetch_uci_async()
+                elif action=="dec":
+                    tag,min_v,step=data
+                    if tag=="depth":   self.engine_settings['depth']   =max(min_v,self.engine_settings['depth']   -step)
+                    elif tag=="threads":self.engine_settings['threads'] =max(min_v,self.engine_settings['threads'] -step)
+                    elif tag=="hash":   self.engine_settings['hash_size']=max(min_v,self.engine_settings['hash_size']-step)
+                    elif tag=="multipv":self.engine_settings['multi_pv']=max(min_v,self.engine_settings['multi_pv']-step)
+                elif action=="inc":
+                    tag,max_v,step=data
+                    if tag=="depth":   self.engine_settings['depth']   =min(max_v,self.engine_settings['depth']   +step)
+                    elif tag=="threads":self.engine_settings['threads'] =min(max_v,self.engine_settings['threads'] +step)
+                    elif tag=="hash":   self.engine_settings['hash_size']=min(max_v,self.engine_settings['hash_size']+step)
+                    elif tag=="multipv":self.engine_settings['multi_pv']=min(max_v,self.engine_settings['multi_pv']+step)
+                elif action=="toggle_cloud":
+                    self.engine_settings['use_cloud']=not self.engine_settings['use_cloud']
+                elif action=="uci_toggle":
+                    opt=self.uci_options[data]
+                    opt["value"]=not(str(opt["value"]).lower() in("true","1","yes"))
+                elif action=="uci_dec":
+                    opt=self.uci_options[data]
+                    try:
+                        v=int(opt["value"])-1
+                        if opt["min"] is not None: v=max(int(opt["min"]),v)
+                        opt["value"]=v
+                    except Exception: pass
+                elif action=="uci_inc":
+                    opt=self.uci_options[data]
+                    try:
+                        v=int(opt["value"])+1
+                        if opt["max"] is not None: v=min(int(opt["max"]),v)
+                        opt["value"]=v
+                    except Exception: pass
+                elif action=="uci_combo_prev":
+                    opt=self.uci_options[data]
+                    if opt["var"]:
+                        try: idx2=opt["var"].index(str(opt["value"]))
+                        except ValueError: idx2=0
+                        opt["value"]=opt["var"][(idx2-1)%len(opt["var"])]
+                elif action=="uci_combo_next":
+                    opt=self.uci_options[data]
+                    if opt["var"]:
+                        try: idx2=opt["var"].index(str(opt["value"]))
+                        except ValueError: idx2=0
+                        opt["value"]=opt["var"][(idx2+1)%len(opt["var"])]
+                elif action=="save_uci":
+                    self._persist_uci()
+                elif action=="apply":
                     self.apply_settings()
                 return
 
     def apply_settings(self):
-        """Apply all settings to the parent and restart engine"""
         if not self.engines: return
-        sel_eng = self.engines[self.selected_idx]
-        
-        # Apply to parent
-        self.parent.max_depth = self.engine_settings['depth']
-        self.parent.engine_threads = self.engine_settings['threads']
-        self.parent.engine_hash = self.engine_settings['hash_size']
-        self.parent.engine_multipv = self.engine_settings['multi_pv']
-        self.parent.use_cloud_analysis = self.engine_settings['use_cloud']
-        
-        # Save to main settings.json
-        self.parent.settings["engine_threads"] = self.engine_settings['threads']
-        self.parent.settings["engine_hash"] = self.engine_settings['hash_size']
-        self.parent.settings["engine_multipv"] = self.engine_settings['multi_pv']
-        self.parent.settings["use_cloud_analysis"] = self.engine_settings['use_cloud']
+        sel_eng=self.engines[self.selected_idx]
+        key=sel_eng.get("path","")
+        if key and key!="lichess_cloud":
+            if key not in self._all_configs: self._all_configs[key]={}
+            self._all_configs[key].update(self.engine_settings)
+            self._save_engines_json()
+        self.parent.max_depth          =self.engine_settings['depth']
+        self.parent.engine_threads     =self.engine_settings['threads']
+        self.parent.engine_hash        =self.engine_settings['hash_size']
+        self.parent.engine_multipv     =self.engine_settings['multi_pv']
+        self.parent.use_cloud_analysis =self.engine_settings['use_cloud']
+        self.parent.settings["engine_threads"]     =self.engine_settings['threads']
+        self.parent.settings["engine_hash"]        =self.engine_settings['hash_size']
+        self.parent.settings["engine_multipv"]     =self.engine_settings['multi_pv']
+        self.parent.settings["use_cloud_analysis"] =self.engine_settings['use_cloud']
         self.parent.save_config()
-        
-        # Update analyzer constraints if available
-        if hasattr(self.parent, 'analyzer') and self.parent.analyzer:
-            self.parent.analyzer.threads = self.engine_settings['threads']
-            self.parent.analyzer.hash_size = self.engine_settings['hash_size']
-            self.parent.analyzer.multipv = self.engine_settings['multi_pv']
-            
-        # Restart engine with new path
-        self.parent.current_engine_info = sel_eng
+        if hasattr(self.parent,'analyzer') and self.parent.analyzer:
+            self.parent.analyzer.threads  =self.engine_settings['threads']
+            self.parent.analyzer.hash_size=self.engine_settings['hash_size']
+            self.parent.analyzer.multipv  =self.engine_settings['multi_pv']
+        self.parent.current_engine_info=sel_eng
         self.parent.change_engine(sel_eng)
-        self.active = False
+        self.active=False
 
     def save_engine_settings(self):
-        """Save current engine settings to a configuration file (From old code)"""
-        try:
-            import json
-            import os
-            import time
-            
-            # Create engine config directory if it doesn't exist
-            config_dir = "assets/config"
-            if not os.path.exists(config_dir):
-                os.makedirs(config_dir)
-            
-            config_file = os.path.join(config_dir, "engine_settings.json")
-            
-            sel_eng = self.engines[self.selected_idx] if self.engines else {}
-            
-            # Prepare settings data
-            settings_data = {
-                "engine_name": sel_eng.get("name", "Unknown"),
-                "engine_path": sel_eng.get("path", ""),
-                "depth": self.engine_settings['depth'],
-                "threads": self.engine_settings['threads'],
-                "hash_size": self.engine_settings['hash_size'],
-                "multi_pv": self.engine_settings['multi_pv'],
-                "use_cloud": self.engine_settings['use_cloud'],
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-            
-            # Save to file
-            with open(config_file, 'w', encoding='utf-8') as f:
-                json.dump(settings_data, f, indent=2)
-            
-            # Show success message to user
-            self.parent.status_msg = "Engine settings saved successfully to assets/config!"
-            
-        except Exception as e:
-            self.parent.status_msg = f"Error saving engine settings: {e}"
+        self.apply_settings()
 
 # =============================================================================
 #  PHASE STATS POPUP
@@ -717,26 +1102,24 @@ class PhaseStatsPopup(BasePopup):
         
         for i, ph in enumerate(phases):
             score = self.stats.get(keys[i], 0)
-            
-            # Label
-            screen.blit(fb.render(ph, True, (0,0,0)), (self.rect.x + 50, y))
-            
-            # Bar Background
-            bar_bg = pygame.Rect(self.rect.x + 180, y + 5, 250, 20)
-            pygame.draw.rect(screen, (220, 220, 220), bar_bg, border_radius=10)
-            
-            # Bar Fill
-            fill_w = int((score / 100) * 250)
-            col = (200, 50, 50) # Red
-            if score > 50: col = (220, 180, 50) # Yellow
-            if score > 80: col = (50, 180, 50) # Green
-            
-            bar_fill = pygame.Rect(self.rect.x + 180, y + 5, fill_w, 20)
-            pygame.draw.rect(screen, col, bar_fill, border_radius=10)
-            
-            # Text Score
-            screen.blit(fm.render(f"{score}/100", True, (0,0,0)), (bar_bg.right + 15, y))
-            
+
+            label = fb.render(ph, True, (0,0,0))
+            screen.blit(label, (self.rect.x + 40, y + 3))
+
+            bar_bg = pygame.Rect(self.rect.x + 170, y, 260, 26)
+            pygame.draw.rect(screen, (220, 220, 220), bar_bg, border_radius=13)
+
+            fill_w = int((score / 100) * 260)
+            col = (200, 50, 50)
+            if score > 50: col = (220, 180, 50)
+            if score > 80: col = (50, 180, 50)
+            if fill_w > 0:
+                bar_fill = pygame.Rect(bar_bg.x, bar_bg.y, fill_w, 26)
+                pygame.draw.rect(screen, col, bar_fill, border_radius=13)
+
+            score_surf = fm.render(f"{score}/100", True, (40, 40, 40))
+            screen.blit(score_surf, (bar_bg.right + 14, y + (26 - score_surf.get_height())//2))
+
             y += 80
 
     def handle_click(self, pos):
@@ -753,33 +1136,43 @@ class PromotionPopup:
         self.zones = []
 
     def draw(self, screen):
-        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0,0,0,100)); screen.blit(ov, (0,0))
-        pygame.draw.rect(screen, (250,250,250), self.rect, border_radius=12)
-        pygame.draw.rect(screen, (0,0,0), self.rect, 2, border_radius=12)
-        
-        title = self.parent.font_b.render("Promote Pawn", True, (0,0,0))
+        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0,0,0,160)); screen.blit(ov, (0,0))
+        shadow_surf = pygame.Surface((self.rect.width + 10, self.rect.height + 10), pygame.SRCALPHA)
+        pygame.draw.rect(shadow_surf, (0, 0, 0, 45), shadow_surf.get_rect(), border_radius=20)
+        screen.blit(shadow_surf, (self.rect.x - 2, self.rect.y + 8))
+        pygame.draw.rect(screen, (252, 252, 254), self.rect, border_radius=16)
+        pygame.draw.rect(screen, (210, 210, 215), self.rect, 2, border_radius=16)
+
+        title = self.parent.font_b.render("Promote Pawn", True, (30, 30, 30))
         screen.blit(title, (self.rect.centerx - title.get_width()//2, self.rect.y + 10))
-        
+
         pcs = [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]
         names = ["Queen", "Rook", "Bishop", "Knight"]
         c = 'w' if self.color == chess.WHITE else 'b'
-        bx = self.rect.x + 20
+
+        card_w = 80
+        gap = 10
+        total = card_w * 4 + gap * 3
+        bx = self.rect.centerx - total // 2
+        self.zones = []
+
         for i, p in enumerate(pcs):
-            r = pygame.Rect(bx, self.rect.y+50, 80, 90)
-            col = (230,230,230) if r.collidepoint(pygame.mouse.get_pos()) else (255,255,255)
-            pygame.draw.rect(screen, col, r, border_radius=6)
-            pygame.draw.rect(screen, (200,200,200), r, 1, border_radius=6)
-            
+            r = pygame.Rect(bx, self.rect.y + 44, card_w, 95)
+            col = (225, 235, 255) if r.collidepoint(pygame.mouse.get_pos()) else (248, 248, 248)
+            pygame.draw.rect(screen, col, r, border_radius=8)
+            pygame.draw.rect(screen, (200,200,200), r, 1, border_radius=8)
+
             k = c + chess.Piece(p, self.color).symbol().lower()
             if k in self.parent.assets.pieces:
-                screen.blit(pygame.transform.smoothscale(self.parent.assets.pieces[k], (60,60)), (r.x+10, r.y+5))
-            
+                img = pygame.transform.smoothscale(self.parent.assets.pieces[k], (58, 58))
+                screen.blit(img, (r.centerx - 29, r.y + 6))
+
             f = self.parent.font_s
-            t = f.render(names[i], True, (0,0,0))
-            screen.blit(t, (r.centerx - t.get_width()//2, r.y+70))
-            
+            t = f.render(names[i], True, (30, 30, 30))
+            screen.blit(t, (r.centerx - t.get_width()//2, r.bottom - 22))
+
             self.zones.append((r, p))
-            bx += 90
+            bx += card_w + gap
 
     def handle_click(self, pos):
         for r, p in self.zones:
@@ -789,6 +1182,464 @@ class PromotionPopup:
                 self.active = False
 
 # =============================================================================
+#  POSITION COMPLEXITY POPUP  (H key)
+# =============================================================================
+class ComplexityPopup:
+    """Live position complexity score with phase breakdown. Toggle with H key."""
+    def __init__(self, parent):
+        self.parent = parent
+        self.active = True
+        w, h = 380, 340
+        self.rect = pygame.Rect(
+            parent.width - w - 20,
+            parent.bd_y if hasattr(parent, 'bd_y') else 80,
+            w, h
+        )
+        self.close_btn = None
+        self._last_fen = None
+        self._score_cache = None
+
+    def _compute(self):
+        """Compute complexity score for the currently viewed board."""
+        try:
+            view_ply = getattr(self.parent, 'view_ply', 0)
+            history = getattr(self.parent, 'history', [])
+            board = chess.Board()
+            for i in range(min(view_ply, len(history))):
+                if isinstance(history[i], dict) and "move" in history[i]:
+                    board.push(history[i]["move"])
+
+            fen = board.fen()
+            if fen == self._last_fen and self._score_cache is not None:
+                return self._score_cache
+
+            self._last_fen = fen
+
+            # Count legal moves
+            legal = list(board.legal_moves)
+            n_legal = len(legal)
+
+            # Hanging pieces
+            hanging = 0
+            for sq in chess.SQUARES:
+                p = board.piece_at(sq)
+                if p and board.is_attacked_by(not p.color, sq):
+                    if not board.is_attacked_by(p.color, sq):
+                        hanging += 1
+
+            # Captures available
+            n_caps = sum(1 for m in legal if board.is_capture(m))
+
+            # Checks available
+            n_checks = sum(1 for m in legal if board.gives_check(m))
+
+            # Phase (piece count heuristic)
+            pieces_left = sum(1 for sq in chess.SQUARES if board.piece_at(sq)
+                              and board.piece_at(sq).piece_type != chess.PAWN)
+            if pieces_left >= 12: phase = "Opening"
+            elif pieces_left >= 6: phase = "Middlegame"
+            else: phase = "Endgame"
+
+            # Normalize each component to 0-100
+            mobility_score = min(100, int(n_legal * 2.5))
+            tension_score  = min(100, int(hanging * 20 + n_caps * 8))
+            tactic_score   = min(100, int(n_checks * 25 + n_caps * 6))
+            phase_mult = {"Opening": 0.7, "Middlegame": 1.0, "Endgame": 0.85}.get(phase, 1.0)
+            overall = int((mobility_score * 0.3 + tension_score * 0.45 + tactic_score * 0.25) * phase_mult)
+            overall = min(100, overall)
+
+            self._score_cache = {
+                "overall": overall,
+                "mobility": mobility_score,
+                "tension": tension_score,
+                "tactics": tactic_score,
+                "phase": phase,
+                "hanging": hanging,
+                "captures": n_caps,
+                "checks": n_checks,
+                "legal": n_legal,
+            }
+            return self._score_cache
+        except Exception as e:
+            return None
+
+    def draw(self, screen, fb, fm):
+        if not self.active: return
+
+        # Panel
+        pygame.draw.rect(screen, (245, 245, 250), self.rect, border_radius=14)
+        pygame.draw.rect(screen, (190, 190, 200), self.rect, 2, border_radius=14)
+
+        # Title
+        title = fb.render("Position Complexity", True, (35, 35, 42))
+        screen.blit(title, (self.rect.x + 16, self.rect.y + 14))
+
+        # Close
+        self.close_btn = pygame.Rect(self.rect.right - 36, self.rect.y + 12, 24, 24)
+        cc = (220, 80, 80) if self.close_btn.collidepoint(pygame.mouse.get_pos()) else (200, 200, 208)
+        pygame.draw.rect(screen, cc, self.close_btn, border_radius=6)
+        cx_s = self.parent.font_s.render("×", True, (255, 255, 255))
+        screen.blit(cx_s, (self.close_btn.centerx - cx_s.get_width() // 2,
+                            self.close_btn.centery - cx_s.get_height() // 2))
+
+        # H-key hint
+        hint = self.parent.font_s.render("Press H to toggle", True, (160, 160, 170))
+        screen.blit(hint, (self.rect.right - hint.get_width() - 40, self.rect.y + 17))
+
+        data = self._compute()
+        if not data:
+            screen.blit(fm.render("No position loaded.", True, (130, 130, 130)),
+                        (self.rect.x + 20, self.rect.y + 80))
+            return
+
+        y = self.rect.y + 50
+        pad = 18
+
+        # Overall score arc / big number
+        overall = data["overall"]
+        arc_col = (50, 180, 50) if overall >= 70 else (220, 170, 40) if overall >= 40 else (200, 60, 60)
+        big = pygame.font.SysFont("Segoe UI", 42, bold=True).render(str(overall), True, arc_col)
+        screen.blit(big, (self.rect.x + pad, y))
+        lbl = self.parent.font_s.render("/ 100  Complexity", True, (100, 100, 110))
+        screen.blit(lbl, (self.rect.x + pad + big.get_width() + 8, y + 18))
+
+        # Phase pill
+        phase_cols = {"Opening": (80, 140, 220), "Middlegame": (220, 130, 40), "Endgame": (80, 160, 100)}
+        pc = phase_cols.get(data["phase"], (120, 120, 140))
+        pr = pygame.Rect(self.rect.right - 120, y + 4, 100, 26)
+        pygame.draw.rect(screen, pc, pr, border_radius=13)
+        pt = self.parent.font_s.render(data["phase"], True, (255, 255, 255))
+        screen.blit(pt, (pr.centerx - pt.get_width() // 2, pr.centery - pt.get_height() // 2))
+
+        y += 60
+
+        # Sub-bars
+        sub_items = [
+            ("Mobility",  data["mobility"],  (80, 130, 210)),
+            ("Tension",   data["tension"],   (210, 100, 60)),
+            ("Tactics",   data["tactics"],   (160, 70, 200)),
+        ]
+        bar_w = self.rect.width - pad * 2
+        for label, val, col3 in sub_items:
+            screen.blit(fm.render(label, True, (60, 60, 70)), (self.rect.x + pad, y))
+            val_txt = self.parent.font_s.render(str(val), True, (80, 80, 90))
+            screen.blit(val_txt, (self.rect.right - pad - val_txt.get_width(), y + 2))
+
+            pygame.draw.rect(screen, (218, 218, 225),
+                             pygame.Rect(self.rect.x + pad, y + 20, bar_w, 10), border_radius=5)
+            fill_w = int((val / 100) * bar_w)
+            if fill_w > 0:
+                pygame.draw.rect(screen, col3,
+                                 pygame.Rect(self.rect.x + pad, y + 20, fill_w, 10), border_radius=5)
+            y += 44
+
+        # Raw counts
+        pygame.draw.line(screen, (210, 210, 218),
+                         (self.rect.x + pad, y), (self.rect.right - pad, y))
+        y += 10
+        stats_txt = (f"Legal: {data['legal']}   "
+                     f"Captures: {data['captures']}   "
+                     f"Checks: {data['checks']}   "
+                     f"Hanging: {data['hanging']}")
+        st = self.parent.font_s.render(stats_txt, True, (110, 110, 120))
+        screen.blit(st, (self.rect.x + pad, y))
+
+    def handle_click(self, pos):
+        if self.close_btn and self.close_btn.collidepoint(pos):
+            self.active = False
+
+    def handle_scroll(self, e): pass
+
+# =============================================================================
+#  MISSED WINS POPUP
+# =============================================================================
+class MissedWinsPopup:
+    """Shows mini boards for positions where a winning advantage was let slip."""
+    def __init__(self, parent, missed_wins, history):
+        self.parent = parent
+        self.missed_wins = missed_wins
+        self.history = history
+        self.active = True
+        self.current = 0
+
+        # Geometry — wider & taller so the board breathes
+        w, h = 700, 580
+        self.rect = pygame.Rect(
+            (parent.width  - w) // 2,
+            (parent.height - h) // 2,
+            w, h
+        )
+        self.close_btn = None
+        self.btn_prev  = None
+        self.btn_next  = None
+        self.btn_jump  = None
+
+        self._board_cache = {}   # idx → chess.Board
+
+    # ------------------------------------------------------------------ helpers
+    def _get_board_at(self, idx):
+        if idx in self._board_cache:
+            return self._board_cache[idx]
+        b = chess.Board()
+        for i, step in enumerate(self.history):
+            if i > idx: break
+            if isinstance(step, dict) and "move" in step:
+                try: b.push(step["move"])
+                except Exception: pass
+        self._board_cache[idx] = b
+        return b
+
+    def _render_mini_board(self, board, sq_sz):
+        from assets import THEME
+        style = getattr(self.parent, 'board_style', 'wood')
+        cols  = THEME.get(style, THEME.get('wood', {}))
+        light = cols.get('light', (240, 217, 181))
+        dark  = cols.get('dark',  (181, 136, 99))
+
+        surf = pygame.Surface((sq_sz * 8, sq_sz * 8))
+        for r in range(8):
+            for c in range(8):
+                col = light if (r + c) % 2 == 0 else dark
+                pygame.draw.rect(surf, col, (c * sq_sz, r * sq_sz, sq_sz, sq_sz))
+
+        assets = getattr(self.parent, 'assets', None)
+        if assets:
+            scaled_pc = {}
+            for sq in chess.SQUARES:
+                p = board.piece_at(sq)
+                if not p: continue
+                key = ('w' if p.color else 'b') + p.symbol().lower()
+                raw = assets.pieces.get(key)
+                if not raw: continue
+                if key not in scaled_pc:
+                    scaled_pc[key] = pygame.transform.smoothscale(raw, (sq_sz - 4, sq_sz - 4))
+                f  = chess.square_file(sq)
+                r2 = 7 - chess.square_rank(sq)
+                surf.blit(scaled_pc[key], (f * sq_sz + 2, r2 * sq_sz + 2))
+        return surf
+
+    def _draw_best_arrow(self, screen, bd_x, bd_y, sq_sz, move):
+        """Dashed green arrow showing the best move the player should have played."""
+        import math
+        f1 = chess.square_file(move.from_square); r1 = 7 - chess.square_rank(move.from_square)
+        f2 = chess.square_file(move.to_square);   r2 = 7 - chess.square_rank(move.to_square)
+        x1 = bd_x + f1 * sq_sz + sq_sz // 2;  y1 = bd_y + r1 * sq_sz + sq_sz // 2
+        x2 = bd_x + f2 * sq_sz + sq_sz // 2;  y2 = bd_y + r2 * sq_sz + sq_sz // 2
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy)
+        if length < 1: return
+        nx, ny   = dx / length, dy / length
+        color    = (20, 170, 80)
+        tip_gap  = sq_sz * 0.28        # stop dashes before arrowhead
+        dash, gap = 9, 5
+        pos, drawing = 0.0, True
+        while pos < length - tip_gap:
+            end = min(pos + (dash if drawing else gap), length - tip_gap)
+            if drawing:
+                pygame.draw.line(screen, color,
+                                 (int(x1 + nx * pos), int(y1 + ny * pos)),
+                                 (int(x1 + nx * end), int(y1 + ny * end)), 3)
+            pos += (dash if drawing else gap)
+            drawing = not drawing
+        # Arrowhead
+        arr = sq_sz * 0.30
+        angle = math.atan2(dy, dx)
+        pts = [
+            (x2, y2),
+            (x2 - arr * math.cos(angle - math.pi / 6), y2 - arr * math.sin(angle - math.pi / 6)),
+            (x2 - arr * math.cos(angle + math.pi / 6), y2 - arr * math.sin(angle + math.pi / 6)),
+        ]
+        pygame.draw.polygon(screen, color, [(int(px), int(py)) for px, py in pts])
+
+    # ------------------------------------------------------------------ draw
+    def draw(self, screen, fb, fm):
+        import math
+
+        # ── Overlay ──────────────────────────────────────────────────────────
+        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        ov.fill((0, 0, 0, 170))
+        screen.blit(ov, (0, 0))
+
+        # ── Panel shadow + background ────────────────────────────────────────
+        shd = pygame.Surface((self.rect.width + 12, self.rect.height + 20), pygame.SRCALPHA)
+        pygame.draw.rect(shd, (0, 0, 0, 55), shd.get_rect(), border_radius=18)
+        screen.blit(shd, (self.rect.x - 2, self.rect.y + 8))
+        pygame.draw.rect(screen, (252, 252, 254), self.rect, border_radius=16)
+        pygame.draw.rect(screen, (210, 210, 215), self.rect, 2, border_radius=16)
+
+        # ── Title ────────────────────────────────────────────────────────────
+        title_txt = fb.render("Missed Winning Moves", True, (40, 40, 45))
+        screen.blit(title_txt, (self.rect.centerx - title_txt.get_width() // 2, self.rect.y + 18))
+
+        # ── Close button ─────────────────────────────────────────────────────
+        self.close_btn = pygame.Rect(self.rect.right - 44, self.rect.y + 14, 28, 28)
+        close_col = (230, 80, 80) if self.close_btn.collidepoint(pygame.mouse.get_pos()) else (220, 220, 225)
+        pygame.draw.rect(screen, close_col, self.close_btn, border_radius=7)
+        cx_t = fb.render("×", True, (255, 255, 255) if self.close_btn.collidepoint(pygame.mouse.get_pos()) else (80, 80, 80))
+        screen.blit(cx_t, (self.close_btn.centerx - cx_t.get_width() // 2,
+                            self.close_btn.centery - cx_t.get_height() // 2))
+
+        if not self.missed_wins:
+            screen.blit(fm.render("No missed wins found.", True, (120, 120, 120)),
+                        (self.rect.centerx - 80, self.rect.centery))
+            return
+
+        idx, step = self.missed_wins[self.current]
+
+        # ── Board geometry ────────────────────────────────────────────────────
+        sq_sz   = 52                           # 52×8 = 416 px board
+        board_w = sq_sz * 8                    # 416
+        bd_x    = self.rect.x + 22
+        bd_y    = self.rect.y + 56
+
+        # Show board BEFORE the bad move so the best-move arrow is meaningful
+        board_before_idx = max(0, idx - 1)
+        board_state = self._get_board_at(board_before_idx)
+        board_surf  = self._render_mini_board(board_state, sq_sz)
+        screen.blit(board_surf, (bd_x, bd_y))
+
+        # Highlight from-square of the bad move (where they moved from)
+        if isinstance(step, dict) and "move" in step:
+            bad_move = step["move"]
+            hl_from = pygame.Surface((sq_sz, sq_sz), pygame.SRCALPHA)
+            hl_from.fill((220, 60, 60, 100))
+            ff = chess.square_file(bad_move.from_square)
+            rf = 7 - chess.square_rank(bad_move.from_square)
+            screen.blit(hl_from, (bd_x + ff * sq_sz, bd_y + rf * sq_sz))
+
+        # Best-move dashed arrow (green)
+        best_uci = step.get("review", {}).get("best_move_uci")
+        if best_uci:
+            try:
+                best_move_obj = chess.Move.from_uci(best_uci)
+                if best_move_obj in board_state.legal_moves:
+                    self._draw_best_arrow(screen, bd_x, bd_y, sq_sz, best_move_obj)
+            except Exception:
+                pass
+
+        # Board border
+        pygame.draw.rect(screen, (150, 150, 160),
+                         pygame.Rect(bd_x - 1, bd_y - 1, board_w + 2, board_w + 2), 2, border_radius=4)
+
+        # ── Info panel (right of board) ───────────────────────────────────────
+        info_x = bd_x + board_w + 20
+        info_w = self.rect.right - info_x - 18
+        iy = bd_y
+
+        # Move label
+        ply      = step.get("ply", idx + 1)
+        move_num = (ply + 1) // 2
+        side     = "White" if ply % 2 != 0 else "Black"
+        san      = step.get("san", "?")
+        hdr = fb.render(f"Move {move_num})  {san}", True, (30, 30, 35))
+        screen.blit(hdr, (info_x, iy))
+        iy += 22
+        side_lbl = self.parent.font_s.render(side, True, (120, 120, 130))
+        screen.blit(side_lbl, (info_x, iy))
+        iy += 30
+
+        # Eval before / after box
+        prev_cp = None
+        if idx > 0 and isinstance(self.history[idx - 1], dict):
+            prev_cp = self.history[idx - 1].get("review", {}).get("eval_cp")
+        curr_cp = step.get("review", {}).get("eval_cp")
+
+        def fmt_cp(v):
+            if v is None: return "?"
+            if abs(v) >= 9000: return ("+" if v > 0 else "") + "M"
+            return f"{v / 100:+.2f}"
+
+        eval_box = pygame.Rect(info_x, iy, info_w, 70)
+        pygame.draw.rect(screen, (245, 245, 250), eval_box, border_radius=8)
+        pygame.draw.rect(screen, (210, 210, 220), eval_box, 1, border_radius=8)
+
+        screen.blit(self.parent.font_s.render("Before", True, (90, 90, 100)), (info_x + 10, iy + 8))
+        before_col = (30, 150, 30) if (prev_cp or 0) > 0 else (190, 50, 50)
+        screen.blit(fb.render(fmt_cp(prev_cp), True, before_col), (info_x + 10, iy + 28))
+
+        mid = info_x + info_w // 2
+        screen.blit(self.parent.font_s.render("After", True, (90, 90, 100)), (mid + 6, iy + 8))
+        after_col = (30, 150, 30) if (curr_cp or 0) > 0 else (190, 50, 50)
+        screen.blit(fb.render(fmt_cp(curr_cp), True, after_col), (mid + 6, iy + 28))
+
+        # Divider between before/after
+        pygame.draw.line(screen, (210, 210, 220), (mid, iy + 8), (mid, iy + 62), 1)
+        iy += 82
+
+        # Classification badge
+        cls = step.get("review", {}).get("class", "move")
+        cls_colors = {"blunder": (210, 50, 50), "mistake": (220, 130, 40),
+                      "miss": (200, 80, 20), "inaccuracy": (190, 180, 30)}
+        badge_col  = cls_colors.get(cls, (140, 140, 150))
+        badge_rect = pygame.Rect(info_x, iy, min(info_w, 120), 28)
+        pygame.draw.rect(screen, badge_col, badge_rect, border_radius=14)
+        badge_txt = self.parent.font_s.render(cls.capitalize(), True, (255, 255, 255))
+        screen.blit(badge_txt, (badge_rect.centerx - badge_txt.get_width() // 2,
+                                badge_rect.centery - badge_txt.get_height() // 2))
+        iy += 40
+
+        # Best move hint label (just "Best: Nf3" — no wall of text)
+        if best_uci:
+            try:
+                bm_obj = chess.Move.from_uci(best_uci)
+                bm_san = board_state.san(bm_obj)
+                bm_lbl = self.parent.font_s.render(f"Best:  {bm_san}", True, (20, 140, 70))
+                screen.blit(bm_lbl, (info_x, iy))
+                iy += 22
+            except Exception:
+                pass
+
+        # ── Jump button — full width, anchored just above nav bar ────────────
+        jump_y = self.rect.bottom - 96
+        self.btn_jump = pygame.Rect(self.rect.x + 20, jump_y, self.rect.width - 40, 34)
+        jcol = (50, 130, 200) if self.btn_jump.collidepoint(pygame.mouse.get_pos()) else (40, 110, 180)
+        pygame.draw.rect(screen, jcol, self.btn_jump, border_radius=8)
+        jt = fm.render("Jump to Position", True, (255, 255, 255))
+        screen.blit(jt, (self.btn_jump.centerx - jt.get_width() // 2,
+                          self.btn_jump.centery - jt.get_height() // 2))
+
+        # ── Navigation bar — Prev | counter | Next ────────────────────────────
+        nav_y   = self.rect.bottom - 50
+        total   = len(self.missed_wins)
+        btn_w2  = 100
+
+        self.btn_prev = pygame.Rect(self.rect.x + 24,                   nav_y, btn_w2, 34)
+        self.btn_next = pygame.Rect(self.rect.right - 24 - btn_w2,      nav_y, btn_w2, 34)
+
+        for btn, label, enabled in [(self.btn_prev, "← Prev", self.current > 0),
+                                     (self.btn_next, "Next →", self.current < total - 1)]:
+            col2 = (160, 160, 168) if not enabled else \
+                   (100, 160, 100) if btn.collidepoint(pygame.mouse.get_pos()) else (80, 140, 80)
+            pygame.draw.rect(screen, col2, btn, border_radius=8)
+            bt = fm.render(label, True, (255, 255, 255) if enabled else (210, 210, 210))
+            screen.blit(bt, (btn.centerx - bt.get_width() // 2,
+                              btn.centery - bt.get_height() // 2))
+
+        # Counter centred between the two buttons
+        counter_txt = fb.render(f"{self.current + 1} / {total}", True, (60, 60, 70))
+        screen.blit(counter_txt, (self.rect.centerx - counter_txt.get_width() // 2,
+                                  nav_y + (34 - counter_txt.get_height()) // 2))
+
+    def handle_click(self, pos):
+        if self.close_btn and self.close_btn.collidepoint(pos):
+            self.active = False
+            return
+        if self.btn_prev and self.btn_prev.collidepoint(pos) and self.current > 0:
+            self.current -= 1
+            return
+        if self.btn_next and self.btn_next.collidepoint(pos) and self.current < len(self.missed_wins) - 1:
+            self.current += 1
+            return
+        if self.btn_jump and self.btn_jump.collidepoint(pos):
+            idx, _ = self.missed_wins[self.current]
+            self.parent.view_ply = idx + 1
+            self.parent.update_opening_label()
+            self.active = False
+            return
+
+    def handle_scroll(self, e): pass
+
+# =============================================================================
 #  REVIEW POPUP
 # =============================================================================
 class ReviewPopup:
@@ -796,15 +1647,15 @@ class ReviewPopup:
         self.parent = parent; self.history = history
         self.engine_path = engine; self.assets = assets 
         self.headers = headers or {}
-        self.active = True; self.status = "Analyzing..."
+        self.active = True; self.status = "Analyzing... 0%"
         self.stats = {}; self.ratings = {"white":0, "black":0}
         self.graph_surface = None
         
         # --- NEW: Setup container for detailed Phase ELO math ---
         self.detailed_review = None 
         
-        # FIX: Increased base height from 750 to 820 to fit all icons
-        self.w, self.h = 1000, 820 
+        # Full-screen size — overridden dynamically by update_rect
+        self.w, self.h = 1400, 900 
         
         self.rect = pygame.Rect(0,0,self.w,self.h)
         self.update_rect()
@@ -824,6 +1675,12 @@ class ReviewPopup:
         self.input_rects = []
         self.cursor_timer = 0
         self.btn_start = None
+        self.btn_missed_wins = None
+        self.missed_wins_popup = None
+        self._missed_wins_cache = []
+        self.graph_cursor_x = None
+        self.btn_missed_wins = None          # shown only when missed wins exist
+        self.missed_wins_popup = None        # sub-popup instance
 
         if not analysis_engine:
             self.status = "No Analysis Mod"
@@ -852,7 +1709,7 @@ class ReviewPopup:
             # FIX: Dynamically inject the missing 'ply' integer into history
             # This guarantees the math engine knows exactly whose turn it was!
             for i, step in enumerate(self.history):
-                if "ply" not in step:
+                if isinstance(step, dict) and "ply" not in step:
                     step["ply"] = i + 1
 
             w_name = self.headers.get("White", "White")
@@ -866,12 +1723,9 @@ class ReviewPopup:
 
     def update_rect(self):
         mw, mh = self.parent.width, self.parent.height
-        self.w = min(1000, mw-40)
-        
-        # FIX: Increased dynamic height limit from 750 to 820
-        self.h = min(820, mh-40) 
-        
-        self.rect = pygame.Rect((mw-self.w)//2, (mh-self.h)//2, self.w, self.h)
+        self.w = mw - 20
+        self.h = mh - 20
+        self.rect = pygame.Rect((mw - self.w) // 2, (mh - self.h) // 2, self.w, self.h)
 
     def start_analysis(self):
         # --- FORCE DEPTH 20 ULTRA-SUPERFAST ANALYSIS ---
@@ -932,42 +1786,121 @@ class ReviewPopup:
             self.parent.auto_archive_bot_game(s, r)
             
             if bf:
-                self.parent.save_brilliant_popup = SaveBrilliantPopup(self.parent, bf)
-                self.parent.save_brilliant_popup.active = True
+                self.parent.save_mate_popup = SaveMatePopup(self.parent, bf)
+                self.parent.save_mate_popup.active = True
 
             self.parent.cached_review = (h, s, r, g, bf)
-            
             self.status = "Complete"
+
+            # --- Auto-generate puzzles from this game ---
+            try:
+                self._generate_game_puzzles(h)
+            except Exception as _e:
+                print(f"Puzzle generation skipped: {_e}")
+
             self.worker.stop()
         except Exception as e:
             print(f"Review Error: {e}")
             self.status = "Failed"
 
+    def _generate_game_puzzles(self, history):
+        """Scan game for fork/pin/mate positions the user actually played or missed, save as appmade puzzles."""
+        import json, os, time as _time
+        board = chess.Board()
+        generated = []
+        for i, step in enumerate(history):
+            if not isinstance(step, dict) or "move" not in step: continue
+            move = step["move"]
+            rev  = step.get("review", {})
+            cls  = rev.get("class", "")
+            ply  = step.get("ply", i + 1)
+            is_player = (ply % 2 != 0) == getattr(self.parent, 'playing_white', True)
+
+            # Criteria: player missed a tactic (blunder/mistake) OR played a brilliant/great
+            if cls in ("blunder", "mistake", "miss") and is_player:
+                puzzle_type = "missed_tactic"
+            elif cls in ("brilliant", "great") and is_player:
+                puzzle_type = "brilliant_find"
+            else:
+                board.push(move)
+                continue
+
+            fen_before = board.fen()
+            puzzle_name = f"Game Puzzle – Move {(ply+1)//2}) {step.get('san','?')} ({cls.capitalize()})"
+            generated.append({
+                "name": puzzle_name,
+                "fen": fen_before,
+                "type": puzzle_type,
+                "source": "auto",
+                "date": _time.strftime("%Y-%m-%d"),
+            })
+            board.push(move)
+
+            if len(generated) >= 5:  # cap per game
+                break
+
+        if generated and hasattr(self.parent, 'assets'):
+            existing = {p.get("fen") for p in self.parent.assets.appmade_puzzles}
+            added = 0
+            for p in generated:
+                if p["fen"] not in existing:
+                    self.parent.assets.appmade_puzzles.insert(0, p)
+                    existing.add(p["fen"])
+                    added += 1
+
+            if added > 0:
+                try:
+                    path = os.path.join("assets", "puzzles", "appmade.json")
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(self.parent.assets.appmade_puzzles, f, indent=2)
+                    self.parent.add_chat("System", f"{added} new puzzle(s) saved from this game!")
+                except Exception as _e2:
+                    print(f"Puzzle save error: {_e2}")
+    
     def handle_click(self, pos):
+        # Missed wins sub-popup gets clicks first
+        if self.missed_wins_popup and self.missed_wins_popup.active:
+            self.missed_wins_popup.handle_click(pos)
+            return
+
         if self.close_btn and self.close_btn.collidepoint(pos): self.active = False
         if self.settings_mode:
             self.handle_settings_click(pos)
             return
 
-        # --- NEW: Interactive Graph Click to Jump to Move ---
-        if hasattr(self, 'graph_rect') and self.graph_rect.collidepoint(pos):
-            total_moves = len(self.history)
-            if total_moves > 0:
-                relative_x = pos[0] - self.graph_rect.x
-                move_idx = int(round((relative_x / self.graph_rect.width) * (total_moves - 1)))
-                if 0 <= move_idx < len(self.history):
-                    self.selected_move_idx = move_idx
-                    self.parent.view_ply = move_idx + 1 # Update board ply
-                    self.parent.update_opening_label()
-                    return # Handled
-        # ----------------------------------------------------
+        # Open missed wins popup
+        if self.btn_missed_wins and self.btn_missed_wins.collidepoint(pos):
+            mw = getattr(self, '_missed_wins_cache', [])
+            if mw:
+                self.missed_wins_popup = MissedWinsPopup(self.parent, mw, self.history)
+                self.missed_wins_popup.active = True
+            return
 
-        col_w = (self.rect.width // 2) - 30
-        right_x = self.rect.centerx + 10
-        curr_y = self.rect.y + 80
-        list_h = self.h - 100 
-        
-        if right_x <= pos[0] <= right_x + col_w and curr_y <= pos[1] <= curr_y + list_h:
+        # --- Eval Graph Click-to-Jump ---
+        if hasattr(self, 'graph_rect') and self.graph_rect.collidepoint(pos):
+            total_plies = max(10, len(self.history))
+            if len(self.history) > 0:
+                relative_x = pos[0] - self.graph_rect.x
+                # Map pixel x → ply index (evals list has ply0 anchor at index 0)
+                frac = relative_x / max(1, self.graph_rect.width)
+                move_idx = int(round(frac * total_plies)) - 1
+                move_idx = max(0, min(move_idx, len(self.history) - 1))
+                self.selected_move_idx = move_idx
+                self.parent.view_ply = move_idx + 1
+                self.parent.update_opening_label()
+                # Draw a vertical cursor line on next frame via stored x
+                self.graph_cursor_x = self.graph_rect.x + int(frac * self.graph_rect.width)
+                return
+        # -----------------------------------------------
+
+        left_col_w = self.rect.width * 62 // 100 - 30
+        right_col_w = self.rect.width - left_col_w - 50
+        right_x = self.rect.x + left_col_w + 40
+        curr_y = self.rect.y + 70
+        list_h = self.h - 90
+
+        if right_x <= pos[0] <= right_x + right_col_w and curr_y <= pos[1] <= curr_y + list_h:
             rel_y = pos[1] - (curr_y + 10) + self.move_scroll
             idx = int(rel_y // 140) * 2
             if 0 <= idx < len(self.history):
@@ -1013,11 +1946,13 @@ class ReviewPopup:
 
         # --- RESTORED SCROLL LOGIC ---
         if e.type == pygame.MOUSEBUTTONDOWN:
-            col_w = (self.rect.width // 2) - 30
-            right_x = self.rect.centerx + 10
-            
-            # Only scroll if the mouse is hovering over the right column (move list)
-            if right_x <= e.pos[0] <= right_x + col_w:
+            # Don't steal scroll events when missed wins sub-popup is open
+            if self.missed_wins_popup and self.missed_wins_popup.active:
+                return
+            left_col_w = self.rect.width * 62 // 100 - 30
+            right_col_w = self.rect.width - left_col_w - 50
+            right_x = self.rect.x + left_col_w + 40
+            if right_x <= e.pos[0] <= right_x + right_col_w:
                 if e.button == 4: self.move_scroll = max(0, self.move_scroll - 40)
                 elif e.button == 5: self.move_scroll += 40
 
@@ -1079,9 +2014,12 @@ class ReviewPopup:
         self.draw_content(screen, fb, fm)
 
     def draw_content(self, screen, fb, fm):
-        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0,0,0,150)); screen.blit(ov, (0,0))
-        pygame.draw.rect(screen, (250,250,252), self.rect, border_radius=12)
-        pygame.draw.rect(screen, (255,255,255), (self.rect.x, self.rect.y, self.rect.width, 60), border_top_left_radius=12, border_top_right_radius=12)
+        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0,0,0,160)); screen.blit(ov, (0,0))
+        shadow = self.rect.copy(); shadow.y += 8
+        pygame.draw.rect(screen, (0,0,0,50), shadow, border_radius=20)
+        pygame.draw.rect(screen, (252,252,254), self.rect, border_radius=16)
+        pygame.draw.rect(screen, (210,210,215), self.rect, 2, border_radius=16)
+        pygame.draw.rect(screen, (255,255,255), (self.rect.x, self.rect.y, self.rect.width, 60), border_top_left_radius=16, border_top_right_radius=16)
         screen.blit(fb.render("Game Review", True, (40,40,40)), (self.rect.x+20, self.rect.y+15))
         self.close_btn = pygame.Rect(self.rect.right-40, self.rect.y+15, 30,30)
         pygame.draw.rect(screen, (220,100,100), self.close_btn, border_radius=5)
@@ -1090,17 +2028,19 @@ class ReviewPopup:
         if self.settings_mode: self.draw_settings(screen, fb, fm); return
 
         left_x = self.rect.x + 20
-        col_w = (self.rect.width // 2) - 30
-        curr_y = self.rect.y + 80
-        
-        # --- FIX: SHOW LIVE ANALYSIS PROGRESS ABOVE GRAPH ---
+        left_col_w = self.rect.width * 62 // 100 - 30
+        right_col_w = self.rect.width - left_col_w - 50
+        right_x = self.rect.x + left_col_w + 40
+        curr_y = self.rect.y + 75
+
+        # --- SHOW LIVE ANALYSIS PROGRESS ABOVE GRAPH ---
         if self.status != "Complete":
-            # Draw the progress text above the graph box dynamically
             status_color = (40, 140, 200) if "Analyzing" in self.status else (100, 100, 100)
-            screen.blit(fb.render(self.status, True, status_color), (left_x, curr_y - 27))
-            
+            screen.blit(fb.render(self.status, True, status_color), (left_x, curr_y))
+            curr_y += 30
+
         # --- NATIVE LUCASCHESS-STYLE AREA GRAPH ---
-        graph_rect = pygame.Rect(left_x, curr_y, col_w, 180)
+        graph_rect = pygame.Rect(left_x, curr_y, left_col_w, 200)
         
         # --- FIX: Save the rect to 'self' so the hover logic can find it! ---
         self.graph_rect = graph_rect 
@@ -1115,7 +2055,7 @@ class ReviewPopup:
         evals = [0] 
         
         for step in self.history:
-            if "review" in step and "eval_cp" in step["review"]:
+            if isinstance(step, dict) and "review" in step and "eval_cp" in step["review"]:
                 evals.append(step["review"]["eval_cp"])
             elif self.status != "Complete":
                 # Stop drawing the line here during live analysis!
@@ -1157,9 +2097,22 @@ class ReviewPopup:
             
             # 4. Draw the main continuous trend line on top
             pygame.draw.lines(screen, (40, 40, 40), False, pts, 2)
+
+            # 4b. Graph cursor — vertical line at clicked position
+            if hasattr(self, 'graph_cursor_x') and self.graph_cursor_x:
+                cx_line = self.graph_cursor_x
+                if graph_rect.left <= cx_line <= graph_rect.right:
+                    pygame.draw.line(screen, (80, 80, 220), (cx_line, graph_rect.top + 4),
+                                     (cx_line, graph_rect.bottom - 4), 2)
+                    # Dot at intersection with eval line
+                    frac = (cx_line - graph_rect.left) / max(1, graph_rect.width)
+                    dot_idx = int(round(frac * total_plies))
+                    if 0 < dot_idx < len(pts):
+                        pygame.draw.circle(screen, (80, 80, 220), pts[dot_idx], 5)
             
             # --- FIX: Draw Colored Dots (Shifted by +1 for the Ply 0 Anchor) ---
             for i, step in enumerate(self.history):
+                if not isinstance(step, dict): continue
                 if (i + 1) < len(pts):
                     px, py = pts[i + 1]
                     cls = step.get("review", {}).get("class", "")
@@ -1178,10 +2131,52 @@ class ReviewPopup:
         elif self.status != "Complete":
             screen.blit(fm.render("Waiting for engine...", True, (180,180,180)), (graph_rect.centerx - 60, graph_rect.centery - 10))
         
-        curr_y += 200
-        # -----------------------------------------------
-        
-        # --- NEW: LucasChess Robust Evaluation Integration ---
+        curr_y += 210
+
+        # --- Move Time Bar Graph (single, unified with rich hover tooltip) ---
+        time_data = [h.get("move_time", 0) for h in self.history if isinstance(h, dict)]
+        history_list = [h for h in self.history if isinstance(h, dict)]
+        if any(t > 0 for t in time_data):
+            time_rect = pygame.Rect(left_x, curr_y, left_col_w, 72)
+            pygame.draw.rect(screen, (248, 248, 252), time_rect, border_radius=6)
+            pygame.draw.rect(screen, (210, 210, 220), time_rect, 1, border_radius=6)
+            screen.blit(self.parent.font_s.render("Move Times", True, (100, 100, 120)),
+                        (time_rect.x + 6, time_rect.y + 4))
+            max_t = max(t for t in time_data if t > 0) or 1.0
+            bar_area = pygame.Rect(time_rect.x + 4, time_rect.y + 20, time_rect.width - 8, 46)
+            n = len(time_data)
+            hovered_tip = None
+            if n > 0:
+                bw = max(2, bar_area.width // n)
+                for i, t in enumerate(time_data):
+                    bh = int((t / max_t) * bar_area.height)
+                    col_bar = (80, 130, 220) if i % 2 == 0 else (220, 140, 60)
+                    bx2 = bar_area.x + i * bw
+                    if bh > 0:
+                        pygame.draw.rect(screen, col_bar,
+                                         (bx2, bar_area.bottom - bh, max(1, bw - 1), bh),
+                                         border_radius=2)
+                    hover_r = pygame.Rect(bx2, bar_area.y, max(1, bw), bar_area.height)
+                    if hover_r.collidepoint(pygame.mouse.get_pos()):
+                        step = history_list[i] if i < len(history_list) else {}
+                        san = step.get("san", "?")
+                        move_num = (i // 2) + 1
+                        side_dot = "." if i % 2 == 0 else "…"
+                        hovered_tip = (f"Move {move_num}{side_dot} {san}  |  {t:.2f}s", bx2)
+            # Draw tooltip on top of all bars so it is never obscured
+            if hovered_tip:
+                tip_text, tip_bx = hovered_tip
+                tip_surf = self.parent.font_s.render(tip_text, True, (20, 20, 20))
+                tip_bg = pygame.Rect(tip_bx, time_rect.y + 2,
+                                     tip_surf.get_width() + 14, tip_surf.get_height() + 8)
+                if tip_bg.right > self.rect.right - 4:
+                    tip_bg.x = self.rect.right - tip_bg.width - 4
+                pygame.draw.rect(screen, (255, 255, 255), tip_bg, border_radius=5)
+                pygame.draw.rect(screen, (100, 120, 200), tip_bg, 1, border_radius=5)
+                screen.blit(tip_surf, (tip_bg.x + 7, tip_bg.y + 4))
+            curr_y += 82
+
+        # ── Gather player stats (LucasChess detailed or fallback) ─────────────
         w_name = self.headers.get("White", "White")
         b_name = self.headers.get("Black", "Black")
 
@@ -1191,11 +2186,8 @@ class ReviewPopup:
             w_acc, w_cpl = pw["overall_accuracy"], int(pw["acl"])
             b_acc, b_cpl = pb["overall_accuracy"], int(pb["acl"])
             w_elo, b_elo = pw["performance_elo"], pb["performance_elo"]
-            
             w_op, w_mg, w_eg = pw["opening_elo"], pw["middlegame_elo"], pw["endgame_elo"]
             b_op, b_mg, b_eg = pb["opening_elo"], pb["middlegame_elo"], pb["endgame_elo"]
-            
-            w_summary, b_summary = pw["summary"], pb["summary"]
         else:
             w_acc = self.stats.get('white', {}).get('acc', 0)
             b_acc = self.stats.get('black', {}).get('acc', 0)
@@ -1203,116 +2195,298 @@ class ReviewPopup:
             if w_cpl == 0 and w_acc > 0: w_cpl = int((100 - w_acc) * 3.5)
             b_cpl = self.stats.get('black', {}).get('acpl', 0)
             if b_cpl == 0 and b_acc > 0: b_cpl = int((100 - b_acc) * 3.5)
-            
             w_elo = self.ratings.get('white', '?')
             b_elo = self.ratings.get('black', '?')
             w_op = w_mg = w_eg = b_op = b_mg = b_eg = None
-            w_summary = self.stats.get('white', {})
-            b_summary = self.stats.get('black', {})
 
-        # White Overall Box
-        pygame.draw.rect(screen, (255,255,255), (left_x, curr_y, col_w//2 - 5, 80), border_radius=8)
-        screen.blit(fb.render(f"W: {w_acc:.1f}%", True, (0,0,0)), (left_x+10, curr_y+10))
-        screen.blit(fm.render(f"ACPL: {w_cpl}", True, (100,100,100)), (left_x+10, curr_y+35))
-        # FIX: Removed [:12] truncation so the full name displays
-        screen.blit(self.parent.font_s.render(w_name, True, (50,50,60)), (left_x+10, curr_y+60))
-        
-        # Black Overall Box
-        pygame.draw.rect(screen, (40,40,40), (left_x+col_w//2 + 5, curr_y, col_w//2 - 5, 80), border_radius=8)
-        screen.blit(fb.render(f"B: {b_acc:.1f}%", True, (255,255,255)), (left_x+col_w//2+15, curr_y+10))
-        screen.blit(fm.render(f"ACPL: {b_cpl}", True, (200,200,200)), (left_x+col_w//2+15, curr_y+35))
-        # FIX: Removed [:12] truncation so the full name displays
-        screen.blit(self.parent.font_s.render(b_name, True, (200,200,220)), (left_x+col_w//2+15, curr_y+60))
-        curr_y += 90
-        
-        # Overall ELO
-        screen.blit(fb.render(f"Est. Elo White: {w_elo or '?'}", True, (40,140,40)), (left_x, curr_y))
-        screen.blit(fb.render(f"Est. Elo Black: {b_elo or '?'}", True, (40,140,40)), (left_x+col_w//2 + 5, curr_y))
-        curr_y += 35
-
-        # Phase ELOs
         def safe_elo(val): return str(val) if val else "-"
-        screen.blit(fm.render(f"Opening:  {safe_elo(w_op)}", True, (80,80,80)), (left_x, curr_y))
-        screen.blit(fm.render(f"Opening:  {safe_elo(b_op)}", True, (80,80,80)), (left_x+col_w//2 + 5, curr_y))
-        curr_y += 20
-        screen.blit(fm.render(f"Middle:   {safe_elo(w_mg)}", True, (80,80,80)), (left_x, curr_y))
-        screen.blit(fm.render(f"Middle:   {safe_elo(b_mg)}", True, (80,80,80)), (left_x+col_w//2 + 5, curr_y))
-        curr_y += 20
-        screen.blit(fm.render(f"Endgame:  {safe_elo(w_eg)}", True, (80,80,80)), (left_x, curr_y))
-        screen.blit(fm.render(f"Endgame:  {safe_elo(b_eg)}", True, (80,80,80)), (left_x+col_w//2 + 5, curr_y))
-        curr_y += 60
 
-        # Categories List
+        # Compute per-phase accuracy from history
+        phase_acc = {"opening": [[], []], "middlegame": [[], []], "endgame": [[], []]}
+
+        # Use detect_game_phases for consistent phase ranges (same logic as the Elo bars)
+        analyzer_inst = getattr(self.parent, 'analyzer', None) or getattr(self, 'worker', None)
+        detected_phases = None
+        if analyzer_inst and hasattr(analyzer_inst, 'detect_game_phases'):
+            detected_phases = analyzer_inst.detect_game_phases(self.history)
+
+        for idx, step in enumerate(self.history):
+            if not isinstance(step, dict): continue
+            rev = step.get("review", {})
+            cls = rev.get("class", "")
+            ply = step.get("ply", 1)
+            side = 0 if ply % 2 != 0 else 1
+
+            # 1. Check if phase was already saved in the review dictionary
+            phase_key = rev.get("phase")
+
+            # 2. Use detect_game_phases index ranges so bars match the Elo computation exactly
+            if not phase_key and detected_phases is not None:
+                for pk, rng in detected_phases.items():
+                    if rng is not None and rng[0] <= idx < rng[1]:
+                        phase_key = pk
+                        break
+
+            if not phase_key or phase_key not in phase_acc:
+                phase_key = "middlegame"
+
+            score = {"brilliant": 100, "great": 95, "best": 90, "excellent": 85,
+                     "good": 75, "book": 80, "inaccuracy": 50, "mistake": 25,
+                     "blunder": 0, "miss": 10}.get(cls, 70)
+            phase_acc[phase_key][side].append(score)
+
+        def mean_acc(lst): return round(sum(lst) / len(lst), 1) if lst else None
+        phase_key_map = {"Opening": "opening", "Middlegame": "middlegame", "Endgame": "endgame"}
+        phase_rows = [("Opening", w_op, b_op), ("Middlegame", w_mg, b_mg), ("Endgame", w_eg, b_eg)]
+
+        # ── NEW LAYOUT: [Stats Box] + [Move Timing Box] ────────
+        GAP = 12
+        stats_panel_w = max(210, left_col_w // 3)
+        timing_panel_w = left_col_w - stats_panel_w - GAP
+        strip_y = curr_y
+
+        stats_x = left_x
+        timing_x = stats_x + stats_panel_w + GAP
+        history_list = [h for h in self.history if isinstance(h, dict)]
+
+        # --- Panel 1: White Stats Box ---
+        w_box_h = 105
+        pygame.draw.rect(screen, (255, 255, 255), pygame.Rect(stats_x, strip_y, stats_panel_w, w_box_h), border_radius=8)
+        pygame.draw.rect(screen, (190, 220, 190), pygame.Rect(stats_x, strip_y, stats_panel_w, w_box_h), 1, border_radius=8)
+        screen.blit(fb.render(f"W: {w_acc:.1f}%", True, (0, 0, 0)), (stats_x + 10, strip_y + 8))
+        screen.blit(fm.render(f"ACPL: {w_cpl}", True, (100, 100, 100)), (stats_x + 10, strip_y + 32))
+        screen.blit(fb.render(f"Est. Elo: {w_elo or '?'}", True, (40, 140, 40)), (stats_x + 10, strip_y + 56))
+        screen.blit(self.parent.font_s.render(w_name, True, (50, 50, 60)), (stats_x + 10, strip_y + 80))
+
+        # --- Panel 2: White Move Times Box ---
+        w_time_rect = pygame.Rect(timing_x, strip_y, timing_panel_w, w_box_h)
+        pygame.draw.rect(screen, (248, 252, 248), w_time_rect, border_radius=8)
+        pygame.draw.rect(screen, (200, 220, 200), w_time_rect, 1, border_radius=8)
+        screen.blit(self.parent.font_s.render("White Move Times", True, (60, 100, 60)), (w_time_rect.x + 8, w_time_rect.y + 4))
+
+        w_moves = [(i, h) for i, h in enumerate(history_list) if i % 2 == 0]
+        w_times = [h.get("move_time", 0) for _, h in w_moves]
+        hovered_tip = None
+
+        if w_times and max(w_times) > 0:
+            max_t = max(w_times)
+            bar_area = pygame.Rect(w_time_rect.x + 8, w_time_rect.y + 24, w_time_rect.width - 16, w_box_h - 32)
+            n = len(w_times)
+            bw = max(2, bar_area.width // n)
+            for idx, t in enumerate(w_times):
+                bh = int((t / max_t) * bar_area.height)
+                bx = bar_area.x + idx * bw
+                if bh > 0:
+                    pygame.draw.rect(screen, (100, 180, 100), (bx, bar_area.bottom - bh, max(1, bw - 1), bh), border_radius=2)
+                hover_r = pygame.Rect(bx, bar_area.y, max(1, bw), bar_area.height)
+                if hover_r.collidepoint(pygame.mouse.get_pos()):
+                    orig_idx, step = w_moves[idx]
+                    san = step.get("san", "?")
+                    move_num = (orig_idx // 2) + 1
+                    hovered_tip = (f"{move_num}. {san}   {t:.1f}s", bx, bar_area.y)
+        else:
+            dash = fb.render("-", True, (180, 180, 180))
+            screen.blit(dash, (w_time_rect.centerx - dash.get_width()//2, w_time_rect.centery - dash.get_height()//2 + 10))
+
+        # --- Panel 3: Black Stats Box (Lighter Black) ---
+        b_box_y = strip_y + w_box_h + GAP
+        b_box_h = 105
+        pygame.draw.rect(screen, (55, 55, 60), pygame.Rect(stats_x, b_box_y, stats_panel_w, b_box_h), border_radius=8)
+        pygame.draw.rect(screen, (90, 90, 100), pygame.Rect(stats_x, b_box_y, stats_panel_w, b_box_h), 1, border_radius=8)
+        screen.blit(fb.render(f"B: {b_acc:.1f}%", True, (240, 240, 245)), (stats_x + 10, b_box_y + 8))
+        screen.blit(fm.render(f"ACPL: {b_cpl}", True, (200, 200, 210)), (stats_x + 10, b_box_y + 32))
+        screen.blit(fb.render(f"Est. Elo: {b_elo or '?'}", True, (120, 210, 120)), (stats_x + 10, b_box_y + 56))
+        screen.blit(self.parent.font_s.render(b_name, True, (180, 180, 190)), (stats_x + 10, b_box_y + 80))
+
+        # --- Panel 4: Black Move Times Box ---
+        b_time_rect = pygame.Rect(timing_x, b_box_y, timing_panel_w, b_box_h)
+        pygame.draw.rect(screen, (252, 248, 248), b_time_rect, border_radius=8)
+        pygame.draw.rect(screen, (220, 200, 200), b_time_rect, 1, border_radius=8)
+        screen.blit(self.parent.font_s.render("Black Move Times", True, (120, 60, 60)), (b_time_rect.x + 8, b_time_rect.y + 4))
+
+        b_moves = [(i, h) for i, h in enumerate(history_list) if i % 2 != 0]
+        b_times = [h.get("move_time", 0) for _, h in b_moves]
+
+        if b_times and max(b_times) > 0:
+            max_t = max(b_times)
+            bar_area = pygame.Rect(b_time_rect.x + 8, b_time_rect.y + 24, b_time_rect.width - 16, b_box_h - 32)
+            n = len(b_times)
+            bw = max(2, bar_area.width // n)
+            for idx, t in enumerate(b_times):
+                bh = int((t / max_t) * bar_area.height)
+                bx = bar_area.x + idx * bw
+                if bh > 0:
+                    pygame.draw.rect(screen, (200, 100, 100), (bx, bar_area.bottom - bh, max(1, bw - 1), bh), border_radius=2)
+                hover_r = pygame.Rect(bx, bar_area.y, max(1, bw), bar_area.height)
+                if hover_r.collidepoint(pygame.mouse.get_pos()):
+                    orig_idx, step = b_moves[idx]
+                    san = step.get("san", "?")
+                    move_num = (orig_idx // 2) + 1
+                    hovered_tip = (f"{move_num}... {san}   {t:.1f}s", bx, bar_area.y)
+        else:
+            dash = fb.render("-", True, (180, 180, 180))
+            screen.blit(dash, (b_time_rect.centerx - dash.get_width()//2, b_time_rect.centery - dash.get_height()//2 + 10))
+
+        # Draw hovered tooltips overlapping everything
+        if hovered_tip:
+            tip_text, tip_x, tip_y = hovered_tip
+            tip_surf = self.parent.font_s.render(tip_text, True, (20, 20, 20))
+            tip_bg = pygame.Rect(tip_x, tip_y - 28, tip_surf.get_width() + 14, tip_surf.get_height() + 8)
+            if tip_bg.right > left_x + left_col_w: tip_bg.right = left_x + left_col_w
+            if tip_bg.y < strip_y: tip_bg.y = strip_y
+            pygame.draw.rect(screen, (255, 255, 255), tip_bg, border_radius=5)
+            pygame.draw.rect(screen, (100, 120, 200), tip_bg, 1, border_radius=5)
+            screen.blit(tip_surf, (tip_bg.x + 7, tip_bg.y + 4))
+
+        # ── Split Layout: Phases (Left) vs Move Classification (Right) ────────
+        split_y = b_box_y + b_box_h + 15
+        
+        col_left_w = (left_col_w // 2) - 10
+        col_right_w = (left_col_w // 2) - 10
+        col_right_x = left_x + col_left_w + 20
+        
+        # --- Phases Column (Vertical Stack) ---
+        current_ph_y = split_y
+        bg_bar_w = col_left_w - 75 # Dynamic scaling width
+        
+        for label, w_elo_v, b_elo_v in phase_rows:
+            pk = phase_key_map[label]
+            w_pa = mean_acc(phase_acc[pk][0])
+            b_pa = mean_acc(phase_acc[pk][1])
+            
+            # Box background
+            pygame.draw.rect(screen, (248, 248, 250), (left_x, current_ph_y, col_left_w, 85), border_radius=6)
+            pygame.draw.rect(screen, (220, 220, 225), (left_x, current_ph_y, col_left_w, 85), 1, border_radius=6)
+            screen.blit(fm.render(label, True, (60, 60, 70)), (left_x + 10, current_ph_y + 8))
+            
+            # White Elo & Bar
+            screen.blit(self.parent.font_s.render(f"W: {safe_elo(w_elo_v)}", True, (50, 100, 50)), (left_x + 10, current_ph_y + 35))
+            pygame.draw.rect(screen, (220, 220, 220), (left_x + 65, current_ph_y + 39, bg_bar_w, 8), border_radius=4)
+            if w_pa is not None:
+                c_bar = (50, 180, 50) if w_pa >= 80 else (220, 170, 40) if w_pa >= 55 else (200, 60, 60)
+                bw2 = int((w_pa / 100.0) * bg_bar_w) # Correct 0-100 logic
+                if bw2 > 0: pygame.draw.rect(screen, c_bar, (left_x + 65, current_ph_y + 39, bw2, 8), border_radius=4)
+                
+            # Black Elo & Bar
+            screen.blit(self.parent.font_s.render(f"B: {safe_elo(b_elo_v)}", True, (120, 60, 60)), (left_x + 10, current_ph_y + 60))
+            pygame.draw.rect(screen, (220, 220, 220), (left_x + 65, current_ph_y + 64, bg_bar_w, 8), border_radius=4)
+            if b_pa is not None:
+                c_bar = (50, 180, 50) if b_pa >= 80 else (220, 170, 40) if b_pa >= 55 else (200, 60, 60)
+                bw2 = int((b_pa / 100.0) * bg_bar_w)
+                if bw2 > 0: pygame.draw.rect(screen, c_bar, (left_x + 65, current_ph_y + 64, bw2, 8), border_radius=4)
+
+            current_ph_y += 95
+            
+        phases_bottom_y = current_ph_y
+
+        # --- Move Classification Column (Right Side) ---
+        class_y = split_y
         cats = [
-            ("Book", "book"), ("Brilliant", "brilliant"), ("Great", "great"), 
-            ("Best", "best"), ("Excellent", "excellent"), ("Good", "good"), 
-            ("Inaccuracy", "inaccuracy"), ("Mistake", "mistake"), 
+            ("Book", "book"), ("Brilliant", "brilliant"), ("Great", "great"),
+            ("Best", "best"), ("Excellent", "excellent"), ("Good", "good"),
+            ("Inaccuracy", "inaccuracy"), ("Mistake", "mistake"),
             ("Blunder", "blunder"), ("Miss", "miss")
         ]
-        
-        # --- FIX: Dynamically re-tally categories directly from history so Book moves never display as 0 ---
         safe_w_summary = {k: 0 for _, k in cats}
         safe_b_summary = {k: 0 for _, k in cats}
         for step in self.history:
-            if "review" in step and "class" in step["review"]:
+            if isinstance(step, dict) and "review" in step and "class" in step["review"]:
                 c = step["review"]["class"]
                 ply = step.get("ply", 1)
                 if ply % 2 != 0: safe_w_summary[c] = safe_w_summary.get(c, 0) + 1
                 else: safe_b_summary[c] = safe_b_summary.get(c, 0) + 1
-        # --------------------------------------------------------------------------------------------------
-        
+
+        # Header row
+        screen.blit(fb.render("Move Classification", True, (55, 55, 65)), (col_right_x, class_y))
+        screen.blit(fm.render("W", True, (80, 80, 80)), (col_right_x + col_right_w - 60, class_y + 2))
+        screen.blit(fm.render("B", True, (80, 80, 80)), (col_right_x + col_right_w - 25, class_y + 2))
+        pygame.draw.line(screen, (220, 220, 220), (col_right_x, class_y + 26), (col_right_x + col_right_w, class_y + 26))
+        class_y += 35
+
         for name, key in cats:
             ic_key = "eval_book" if key == "book" and "eval_book" in self.assets.icons else key
-            
             ic = self.assets.icons.get(ic_key)
-            if ic: screen.blit(pygame.transform.smoothscale(ic,(20,20)),(left_x, curr_y))
-            screen.blit(fm.render(name, True, (80,80,80)), (left_x+30, curr_y))
             
-            wc = safe_w_summary.get(key,0)
-            bc = safe_b_summary.get(key,0)
-            screen.blit(fm.render(str(wc), True, (0,0,0)), (left_x+250, curr_y))
-            screen.blit(fm.render(str(bc), True, (0,0,0)), (left_x+350, curr_y))
-            curr_y += 28
+            pygame.draw.rect(screen, (250, 250, 253), (col_right_x, class_y - 4, col_right_w, 26), border_radius=4)
+            if ic: screen.blit(pygame.transform.smoothscale(ic, (20, 20)), (col_right_x + 4, class_y - 1))
+            
+            screen.blit(fm.render(name, True, (60, 60, 60)), (col_right_x + 32, class_y))
+            
+            wc = safe_w_summary.get(key, 0)
+            bc = safe_b_summary.get(key, 0)
+            
+            screen.blit(fb.render(str(wc), True, (40, 100, 40) if wc > 0 else (150, 150, 150)), (col_right_x + col_right_w - 60, class_y))
+            screen.blit(fb.render(str(bc), True, (180, 60, 60) if bc > 0 else (150, 150, 150)), (col_right_x + col_right_w - 25, class_y))
+            class_y += 28
 
-        # --- PRESERVED EXISTING RIGHT COLUMN (Move List, Chat, & Avatars) ---
-        right_x = self.rect.centerx + 10
-        curr_y = self.rect.y + 80
-        list_h = self.h - 100 
-        
-        pygame.draw.rect(screen, (255,255,255), (right_x, curr_y, col_w, list_h), border_radius=8)
-        clip = pygame.Rect(right_x, curr_y, col_w, list_h)
+        final_y = max(phases_bottom_y, class_y) + 5
+
+        # ── Missed Win Detection Button ───────────────────────────────────────
+        missed_wins = []
+        for i, step in enumerate(self.history):
+            if not isinstance(step, dict): continue
+            rev = step.get("review", {})
+            prev_cp = None
+            if i > 0 and isinstance(self.history[i - 1], dict):
+                prev_cp = self.history[i - 1].get("review", {}).get("eval_cp")
+            curr_cp = rev.get("eval_cp")
+            if prev_cp is not None and curr_cp is not None:
+                ply = step.get("ply", i + 1)
+                is_white_move = (ply % 2 != 0)
+                if is_white_move and prev_cp >= 500 and curr_cp < 150:
+                    missed_wins.append((i, step))
+                elif not is_white_move and prev_cp <= -500 and curr_cp > -150:
+                    missed_wins.append((i, step))
+
+        if missed_wins:
+            self.btn_missed_wins = pygame.Rect(left_x, final_y, left_col_w // 2, 36)
+            mw_col = (210, 80, 50) if self.btn_missed_wins.collidepoint(pygame.mouse.get_pos()) else (180, 60, 40)
+            pygame.draw.rect(screen, mw_col, self.btn_missed_wins, border_radius=8)
+            mw_txt = fb.render(f"Missed Wins  ({len(missed_wins)})", True, (255, 255, 255))
+            screen.blit(mw_txt, (self.btn_missed_wins.centerx - mw_txt.get_width() // 2,
+                                  self.btn_missed_wins.centery - mw_txt.get_height() // 2))
+        else:
+            self.btn_missed_wins = None
+
+        self._missed_wins_cache = missed_wins
+
+        if self.missed_wins_popup and self.missed_wins_popup.active:
+            self.missed_wins_popup.draw(screen, fb, fm)
+
+        # --- RIGHT COLUMN: Full Move List ---
+        curr_y = self.rect.y + 70
+        list_h = self.h - 90
+
+        pygame.draw.rect(screen, (255, 255, 255),
+                         (right_x, curr_y, right_col_w, list_h), border_radius=8)
+        clip = pygame.Rect(right_x, curr_y, right_col_w, list_h)
         screen.set_clip(clip)
         
         my = curr_y + 10 - self.move_scroll
         item_h = 140 
         
-        # FIX: Calculate total height based on all moves
         total_list_h = len(self.history) * item_h
         max_scroll = max(0, total_list_h - list_h + 50)
         self.move_scroll = max(0, min(self.move_scroll, max_scroll))
         
-        # --- FIX: Dynamically show the selected Engine name instead of hardcoding ---
         if getattr(self.parent, 'active_bot', None):
             bot_name = self.parent.active_bot.get("name")
             bot_av = self.assets.get_avatar(bot_name)
         else:
-            # Change the label to Stockfish 18
             bot_name = getattr(self.parent, 'current_engine_info', {}).get("name", "Stockfish 18")
-            
-            # Intercept the blue square fallback and force the Stockfish icon to load!
             if getattr(self.parent, 'stockfish_icon', None):
                 bot_av = self.parent.stockfish_icon
             else:
                 bot_av = self.assets.get_avatar(bot_name)
-        # ----------------------------------------------------------------------------
         
         for i, move in enumerate(self.history):
+            if not isinstance(move, dict): continue
             if my > clip.bottom: break
             if my + item_h > clip.y:
                 bg = (248,248,252) if i%2==0 else (255,255,255)
                 if i == self.selected_move_idx: bg = (230, 230, 250)
                 
-                pygame.draw.rect(screen, bg, (right_x, my, col_w, item_h-2))
+                pygame.draw.rect(screen, bg, (right_x, my, right_col_w, item_h-2))
                 
                 txt = f"{i//2+1}. " if i%2==0 else "... "
                 txt += move["san"]
@@ -1327,9 +2501,9 @@ class ReviewPopup:
                     if ev:
                         col = (20,160,20) if "+" in ev else (200,50,50)
                         tx_surf = fm.render(ev, True, col)
-                        screen.blit(tx_surf, (right_x + col_w - 60, my+10))
+                        screen.blit(tx_surf, (right_x + right_col_w - 60, my+10))
                     if ic_key and ic_key in self.assets.icons:
-                        screen.blit(pygame.transform.smoothscale(self.assets.icons[ic_key], (24,24)), (right_x + col_w - 100, my+7))
+                        screen.blit(pygame.transform.smoothscale(self.assets.icons[ic_key], (24,24)), (right_x + right_col_w - 100, my+7))
                     
                     if reason:
                         if bot_av:
@@ -1337,12 +2511,12 @@ class ReviewPopup:
                             ox = (30 - scaled_av.get_width()) // 2
                             oy = (30 - scaled_av.get_height()) // 2
                             screen.blit(scaled_av, (right_x + 10 + ox, my + 40 + oy))
-                            screen.blit(self.parent.font_s.render(f"{bot_name}:", True, (100,100,150)), (right_x + 45, my + 40))
-                            self.parent.renderer.draw_multiline_text(reason, self.parent.font_s, (60,60,60), right_x+45, my+60, col_w-60)
+                            screen.blit(fm.render(f"{bot_name}:", True, (100,100,150)), (right_x + 45, my + 40))
+                            self.parent.renderer.draw_multiline_text(reason, fm, (60,60,60), right_x+45, my+60, right_col_w-60)
                         else:
-                            self.parent.renderer.draw_multiline_text(reason, self.parent.font_s, (80,80,80), right_x+15, my+40, col_w-30)
+                            self.parent.renderer.draw_multiline_text(reason, fm, (80,80,80), right_x+15, my+40, right_col_w-30)
                 else:
-                     screen.blit(self.parent.font_s.render("Analyzing...", True, (150,150,150)), (right_x+15, my+35))
+                     screen.blit(fm.render("Analyzing...", True, (150,150,150)), (right_x+15, my+35))
             
             my += item_h
         screen.set_clip(None)
@@ -1350,60 +2524,52 @@ class ReviewPopup:
         # --- NEW: Interactive Graph Hover Tooltip ---
         if hasattr(self, 'graph_rect') and hasattr(self, 'history'):
             mx, my = pygame.mouse.get_pos()
-            # Only show tooltip if mouse is hovering over the graph box
             if self.graph_rect.collidepoint(mx, my):
                 total_moves = len(self.history)
                 if total_moves > 0:
-                    # Map mouse X coordinate to the exact move in history
                     relative_x = mx - self.graph_rect.x
                     
-                    # --- FIX: Snapping math aligned with the static anchored grid ---
-                    move_idx = int(round((relative_x / self.graph_rect.width) * total_plies)) - 1
+                    # Calculate safe total_plies for grid snapping
+                    safe_total_plies = max(10, len(self.history))
+                    move_idx = int(round((relative_x / self.graph_rect.width) * safe_total_plies)) - 1
                     
                     if 0 <= move_idx < len(self.history):
                         step = self.history[move_idx]
                         
-                        # Only show tooltip if the move has been analyzed!
-                        if "review" in step and "eval_str" in step["review"]:
+                        # FOOLPROOF INDENTATION: Everything must be inside this 'if' block!
+                        # This prevents the app from crashing if a move hasn't been analyzed yet.
+                        if isinstance(step, dict) and "review" in step and "eval_str" in step["review"]:
                             move_num = (move_idx // 2) + 1
                             san = step.get("san", "")
                             eval_str = step["review"].get("eval_str", "")
-                        
-                        # --- FIX: Inject the Move Icon into the Tooltip! ---
-                        cls = step.get("review", {}).get("class", "")
-                        ic_key = "eval_book" if cls == "book" else cls
-                        icon = self.assets.icons.get(ic_key)
-                        
-                        # Build tooltip text
-                        tt_text = f" Move {move_num} ({san}) | Eval: {eval_str} "
-                        tt_surf = fm.render(tt_text, True, (0, 0, 0))
-                        
-                        # Calculate Box Width (Text + padding + optional icon space)
-                        box_w = tt_surf.get_width() + 10
-                        if icon: box_w += 26
-                        
-                        # Draw Tooltip Box following the mouse
-                        tt_rect = pygame.Rect(mx + 15, my + 15, box_w, tt_surf.get_height() + 10)
-                        
-                        # Keep tooltip from flying off the right side of the screen
-                        if tt_rect.right > screen.get_width(): 
-                            tt_rect.x -= tt_rect.width + 30
-                        
-                        # Draw the white box and blue border
-                        pygame.draw.rect(screen, (255, 255, 255), tt_rect, border_radius=6)
-                        pygame.draw.rect(screen, (0, 150, 255), tt_rect, 2, border_radius=6) 
-                        
-                        # Draw Icon and Text inside the Tooltip
-                        content_x = tt_rect.x + 5
-                        content_y = tt_rect.y + 5
-                        
-                        if icon:
-                            scaled_ic = pygame.transform.smoothscale(icon, (20, 20))
-                            screen.blit(scaled_ic, (content_x, tt_rect.centery - 10))
-                            content_x += 26
                             
-                        screen.blit(tt_surf, (content_x, content_y))
-                        # ---------------------------------------------------
+                            cls = step["review"].get("class", "")
+                            ic_key = "eval_book" if cls == "book" else cls
+                            icon = self.assets.icons.get(ic_key)
+                            
+                            tt_text = f" Move {move_num} ({san}) | Eval: {eval_str} "
+                            tt_surf = fm.render(tt_text, True, (0, 0, 0))
+                            
+                            box_w = tt_surf.get_width() + 10
+                            if icon: box_w += 26
+                            
+                            tt_rect = pygame.Rect(mx + 15, my + 15, box_w, tt_surf.get_height() + 10)
+                            
+                            if tt_rect.right > screen.get_width(): 
+                                tt_rect.x -= tt_rect.width + 30
+                            
+                            pygame.draw.rect(screen, (255, 255, 255), tt_rect, border_radius=6)
+                            pygame.draw.rect(screen, (0, 150, 255), tt_rect, 2, border_radius=6) 
+                            
+                            content_x = tt_rect.x + 5
+                            content_y = tt_rect.y + 5
+                            
+                            if icon:
+                                scaled_ic = pygame.transform.smoothscale(icon, (20, 20))
+                                screen.blit(scaled_ic, (content_x, tt_rect.centery - 10))
+                                content_x += 26
+                                
+                            screen.blit(tt_surf, (content_x, content_y))
                         
 class PGNSavePopup(BasePopup):
     def __init__(self, parent):
@@ -1545,7 +2711,9 @@ class PGNSavePopup(BasePopup):
         # 3. Iterate history and write Engine Evaluations
         node = game
         for step in self.parent.history:
-            move = step["move"]
+            if not isinstance(step, dict): continue
+            move = step.get("move")
+            if not move: continue
             if isinstance(move, str): move = chess.Move.from_uci(move)
             
             node = node.add_variation(move)
@@ -1572,7 +2740,7 @@ class PGNSavePopup(BasePopup):
                 else:
                     comments.append(f"[%eval {val}]")
                     
-            # C. Brilliant/Blunder Classifications (for like pro chess softwares & Lichess)
+            # C. Brilliant/Blunder Classifications (for like chess.coms & Lichess)
             if "class" in review:
                 cls_name = review["class"].capitalize()
                 comments.append(f"[%class {cls_name}]")
@@ -1696,10 +2864,10 @@ class PGNSelectionPopup(BasePopup):
         self.btn_prev = pygame.Rect(cx - 150, bottom_y, 80, 35)
         if self.current_page > 0:
             pygame.draw.rect(screen, (100, 150, 200), self.btn_prev, border_radius=6)
-            txt_prev = fm.render("◀ Prev", True, (255, 255, 255))
+            txt_prev = fm.render("< Prev", True, (255, 255, 255))
         else:
             pygame.draw.rect(screen, (220, 220, 220), self.btn_prev, border_radius=6)
-            txt_prev = fm.render("◀ Prev", True, (150, 150, 150))
+            txt_prev = fm.render("< Prev", True, (150, 150, 150))
         screen.blit(txt_prev, (self.btn_prev.centerx - txt_prev.get_width()//2, self.btn_prev.centery - txt_prev.get_height()//2))
 
         page_txt = fb.render(f"Page {self.current_page + 1} of {self.total_pages}", True, (80, 80, 80))
@@ -1708,10 +2876,10 @@ class PGNSelectionPopup(BasePopup):
         self.btn_next = pygame.Rect(cx + 70, bottom_y, 80, 35)
         if self.current_page < self.total_pages - 1:
             pygame.draw.rect(screen, (100, 150, 200), self.btn_next, border_radius=6)
-            txt_next = fm.render("Next ▶", True, (255, 255, 255))
+            txt_next = fm.render("Next >", True, (255, 255, 255))
         else:
             pygame.draw.rect(screen, (220, 220, 220), self.btn_next, border_radius=6)
-            txt_next = fm.render("Next ▶", True, (150, 150, 150))
+            txt_next = fm.render("Next >", True, (150, 150, 150))
         screen.blit(txt_next, (self.btn_next.centerx - txt_next.get_width()//2, self.btn_next.centery - txt_next.get_height()//2))
 
     def handle_scroll(self, e):
@@ -1756,9 +2924,10 @@ class ButtonsPopup(BasePopup):
         self.btns = [
             ("New Game", "reset"), ("Flip Board", "flip"), ("Takeback", "undo"),
             ("Game Mode", "mode"), ("Puzzles", "puzzles"), ("Theme", "theme"),
-            ("GM Move", "gm_move"), ("Engine Hints", "enginehint"), 
-            ("Live Annotations", "annotations"), ("Copy Current FEN", "copy_fen"), 
-            ("Calibrate Engine", "calibrate"), ("Settings", "settings")
+            ("GM Move", "gm_move"), ("Engine Hints", "enginehint"),
+            ("Live Annotations", "annotations"), ("Copy Current FEN", "copy_fen"),
+            ("Dark Theme", "dark_theme"), ("Calibrate Engine", "calibrate"),
+            ("Settings", "settings")
         ]
         self.zones = []
         self.scroll = 0
@@ -1805,6 +2974,9 @@ class ButtonsPopup(BasePopup):
                 btn_txt = f"{txt} {status}"
             elif tag == "annotations":
                 status = "[ON]" if self.parent.settings.get("live_annotations", True) else "[OFF]"
+                btn_txt = f"{txt} {status}"
+            elif tag == "dark_theme":
+                status = "[ON]" if self.parent.settings.get("dark_theme", False) else "[OFF]"
                 btn_txt = f"{txt} {status}"
                 
             screen.blit(fb.render(btn_txt, True, (20,20,20)), (tx, r.y + 10))
@@ -1857,9 +3029,12 @@ class BotPopup:
         return grps
 
     def draw(self, screen, fb, fm):
-        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0, 0, 0, 150)); screen.blit(ov, (0, 0))
-        pygame.draw.rect(screen, (250, 250, 252), self.rect, border_radius=12)
-        pygame.draw.line(screen, (200,200,200), (self.rect.centerx, self.rect.y+60), (self.rect.centerx, self.rect.bottom-80))
+        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0, 0, 0, 160)); screen.blit(ov, (0, 0))
+        shadow = self.rect.copy(); shadow.y += 8
+        pygame.draw.rect(screen, (0,0,0,50), shadow, border_radius=20)
+        pygame.draw.rect(screen, (252, 252, 254), self.rect, border_radius=16)
+        pygame.draw.rect(screen, (210, 210, 215), self.rect, 2, border_radius=16)
+        pygame.draw.line(screen, (220,220,225), (self.rect.centerx, self.rect.y+60), (self.rect.centerx, self.rect.bottom-80), 2)
         screen.blit(fb.render("Select Bot Engine", True, (50,50,50)), (self.rect.x+130, self.rect.y+20))
         screen.blit(fb.render("Select GM Personality", True, (50,50,50)), (self.rect.centerx+130, self.rect.y+20))
         
@@ -1970,10 +3145,13 @@ class SideSelectionPopup(BasePopup):
         self.bot_data = bot_data; self.rects = {}
 
     def draw(self, screen, fb=None, fm=None):
-        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0, 0, 0, 200)); screen.blit(ov, (0, 0))
-        cw, ch = 500, 300
+        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0, 0, 0, 160)); screen.blit(ov, (0, 0))
+        cw, ch = 550, 330 # Enlarged slightly for modern feel
         cx, cy = (screen.get_width() - cw)//2, (screen.get_height() - ch)//2
-        pygame.draw.rect(screen, (255, 255, 255), (cx, cy, cw, ch), border_radius=15)
+        shadow = pygame.Rect(cx, cy + 8, cw, ch)
+        pygame.draw.rect(screen, (0,0,0,50), shadow, border_radius=20)
+        pygame.draw.rect(screen, (252, 252, 254), (cx, cy, cw, ch), border_radius=16)
+        pygame.draw.rect(screen, (210, 210, 215), (cx, cy, cw, ch), 2, border_radius=16)
         self.close_btn = pygame.Rect(cx + cw - 40, cy + 10, 30, 30)
         x_col = (220, 220, 220) if self.close_btn.collidepoint(pygame.mouse.get_pos()) else (240, 240, 240)
         pygame.draw.rect(screen, x_col, self.close_btn, border_radius=5)
@@ -1987,16 +3165,24 @@ class SideSelectionPopup(BasePopup):
             if wk_img: wk_img = pygame.transform.smoothscale(wk_img, (100, 100))
             if bk_img: bk_img = pygame.transform.smoothscale(bk_img, (100, 100))
         except: pass
-        btn_y = cy + 120
-        w_rect = pygame.Rect(cx + 80, btn_y, 140, 140)
+        card_w, card_h = 140, 140
+        gap = 40
+        total_cards_w = card_w * 2 + gap
+        card_x_start = cx + (cw - total_cards_w) // 2
+        btn_y = cy + (ch - card_h) // 2 + 10  # vertically centred with slight downward nudge for title
+
+        w_rect = pygame.Rect(card_x_start, btn_y, card_w, card_h)
         pygame.draw.rect(screen, (240, 240, 240), w_rect, border_radius=10)
-        if wk_img: screen.blit(wk_img, (w_rect.x + 20, w_rect.y + 10))
-        screen.blit(self.parent.font_s.render("White", True, (0, 0, 0)), (w_rect.centerx - 20, w_rect.bottom - 30))
+        if wk_img: screen.blit(wk_img, (w_rect.x + (card_w - wk_img.get_width()) // 2, w_rect.y + 10))
+        w_lbl = self.parent.font_s.render("White", True, (0, 0, 0))
+        screen.blit(w_lbl, (w_rect.centerx - w_lbl.get_width() // 2, w_rect.bottom - 28))
         self.rects["white"] = w_rect
-        b_rect = pygame.Rect(cx + 280, btn_y, 140, 140)
+
+        b_rect = pygame.Rect(card_x_start + card_w + gap, btn_y, card_w, card_h)
         pygame.draw.rect(screen, (180, 180, 180), b_rect, border_radius=10)
-        if bk_img: screen.blit(bk_img, (b_rect.x + 20, b_rect.y + 10))
-        screen.blit(self.parent.font_s.render("Black", True, (0, 0, 0)), (b_rect.centerx - 20, b_rect.bottom - 30))
+        if bk_img: screen.blit(bk_img, (b_rect.x + (card_w - bk_img.get_width()) // 2, b_rect.y + 10))
+        b_lbl = self.parent.font_s.render("Black", True, (0, 0, 0))
+        screen.blit(b_lbl, (b_rect.centerx - b_lbl.get_width() // 2, b_rect.bottom - 28))
         self.rects["black"] = b_rect
 
     def handle_click(self, pos):
@@ -2029,20 +3215,20 @@ class SettingsPopup(BasePopup):
         
      def draw(self, screen, fb, fm):
         self.draw_bg(screen, "Settings", fb)
-        y = self.rect.y + 80
-        # Renamed to Bot Voice
+        y = self.rect.y + 90
         opts = [("Sound", "sound"), ("Bot Voice", "speech")]
         self.toggle_rects = []
         for label, key in opts:
             val = self.parent.settings.get(key, True)
             col = (50, 200, 50) if val else (200, 50, 50)
-            btn = pygame.Rect(self.rect.x + 250, y, 60, 30)
+            btn = pygame.Rect(self.rect.right - 100, y, 60, 30)
             pygame.draw.rect(screen, col, btn, border_radius=15)
             toggle_x = btn.right - 25 if val else btn.x + 5
-            pygame.draw.circle(screen, (255,255,255), (toggle_x + 10, y+15), 12)
-            screen.blit(fm.render(label, True, (0,0,0)), (self.rect.x+30, y+5))
+            pygame.draw.circle(screen, (255,255,255), (toggle_x + 10, btn.centery), 12)
+            lbl = fm.render(label, True, (0,0,0))
+            screen.blit(lbl, (self.rect.x + 40, btn.centery - lbl.get_height()//2))
             self.toggle_rects.append((btn, key))
-            y += 50
+            y += 55
 
      def handle_click(self, pos):
          if self.close_btn.collidepoint(pos): self.active = False; return
@@ -2092,12 +3278,23 @@ class GMPopup:
         self.gm_list.sort(key=lambda x: (x["move_info"] is None, x["gm_name"]))
 
     def draw(self, screen, fb, fm):
-        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0, 0, 0, 150)); screen.blit(ov, (0, 0))
-        pygame.draw.rect(screen, (250, 250, 252), self.rect, border_radius=12)
-        screen.blit(fb.render("What would a Grandmaster play?", True, (40, 40, 40)), (self.rect.x + 20, self.rect.y + 20))
-        
-        pygame.draw.rect(screen, (200, 200, 200), self.close_btn, border_radius=5)
-        screen.blit(fb.render("X", True, (0, 0, 0)), (self.close_btn.x + 8, self.close_btn.y + 2))
+        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0, 0, 0, 160)); screen.blit(ov, (0, 0))
+        shadow_surf = pygame.Surface((self.w + 10, self.h + 10), pygame.SRCALPHA)
+        pygame.draw.rect(shadow_surf, (0, 0, 0, 45), shadow_surf.get_rect(), border_radius=20)
+        screen.blit(shadow_surf, (self.rect.x - 2, self.rect.y + 8))
+        pygame.draw.rect(screen, (252, 252, 254), self.rect, border_radius=16)
+        pygame.draw.rect(screen, (210, 210, 215), self.rect, 2, border_radius=16)
+        t_surf = fb.render("What would a Grandmaster play?", True, (40, 40, 40))
+        screen.blit(t_surf, (self.rect.centerx - t_surf.get_width()//2, self.rect.y + 24))
+
+        self.close_btn = pygame.Rect(self.rect.right - 46, self.rect.y + 18, 30, 30)
+        is_hover = self.close_btn.collidepoint(pygame.mouse.get_pos())
+        col = (240, 80, 80) if is_hover else (225, 225, 230)
+        txt_col = (255, 255, 255) if is_hover else (100, 100, 100)
+        pygame.draw.rect(screen, col, self.close_btn, border_radius=8)
+        x_surf = fb.render("X", True, txt_col)
+        screen.blit(x_surf, (self.close_btn.centerx - x_surf.get_width()//2,
+                              self.close_btn.centery - x_surf.get_height()//2))
         
         if not self.gm_list:
             screen.blit(fm.render("No GM books loaded in assets/books/", True, (150, 150, 150)), (self.rect.x + 50, self.rect.y + 150))
@@ -2177,36 +3374,27 @@ class TrainerCompletePopup(BasePopup):
     def draw(self, screen, fb, fm):
         self.draw_bg(screen, "Practice Completed!", fb)
         cx, cy = self.rect.centerx, self.rect.y
-        
-        # Bot Avatar (Keep the UI consistent)
+
         bot_name = self.parent.active_bot.get("name") if self.parent.active_bot else "player"
         av = self.parent.assets.get_avatar(bot_name)
         if av:
-            screen.blit(pygame.transform.smoothscale(av, (80, 80)), (cx - 40, cy + 60))
-        
-        # --- FIX: Dynamic Question Text based on sequence type ---
-        # Determine if it was a mate sequence or opening based on stored context
+            scaled = pygame.transform.smoothscale(av, (80, 80))
+            screen.blit(scaled, (cx - scaled.get_width()//2, cy + 65))
+
         status = getattr(self.parent, 'status_msg', '').lower()
         op_name = getattr(self.parent, 'opening_name', '').lower()
-        
-        if "mate sequence" in status or "mate" in op_name:
-            type_str = "mate sequence"
-        else:
-            type_str = "opening"
-            
+        type_str = "mate sequence" if ("mate sequence" in status or "mate" in op_name) else "opening"
+
         txt = fb.render(f"Shall we practice another {type_str}?", True, (40, 40, 40))
-        screen.blit(txt, (cx - txt.get_width()//2, cy + 160))
-        # ---------------------------------------------------------
-        
-        # Option 1: Yes (Green)
-        self.btn_yes = pygame.Rect(cx - 120, cy + 210, 240, 45)
+        screen.blit(txt, (cx - txt.get_width()//2, cy + 165))
+
+        self.btn_yes = pygame.Rect(cx - 120, cy + 218, 240, 45)
         col_yes = (60, 180, 60) if self.btn_yes.collidepoint(pygame.mouse.get_pos()) else (50, 160, 50)
         pygame.draw.rect(screen, col_yes, self.btn_yes, border_radius=8)
         t_yes = fb.render("Yes, sure !", True, (255, 255, 255))
         screen.blit(t_yes, (self.btn_yes.centerx - t_yes.get_width()//2, self.btn_yes.centery - t_yes.get_height()//2))
-        
-        # Option 2: No (Gray)
-        self.btn_no = pygame.Rect(cx - 120, cy + 270, 240, 45)
+
+        self.btn_no = pygame.Rect(cx - 120, cy + 278, 240, 45)
         col_no = (200, 200, 200) if self.btn_no.collidepoint(pygame.mouse.get_pos()) else (220, 220, 220)
         pygame.draw.rect(screen, col_no, self.btn_no, border_radius=8)
         t_no = fb.render("Enough for now...", True, (80, 80, 80))
@@ -2235,37 +3423,55 @@ class TrainerSideSelectionPopup(BasePopup):
             self.parent.trainer_popup.active = False
 
     def draw(self, screen, fb=None, fm=None):
-        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0, 0, 0, 200)); screen.blit(ov, (0, 0))
-        cw, ch = 500, 300
+        ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0, 0, 0, 160)); screen.blit(ov, (0, 0))
+        cw, ch = 550, 340
         cx, cy = (screen.get_width() - cw)//2, (screen.get_height() - ch)//2
-        pygame.draw.rect(screen, (255, 255, 255), (cx, cy, cw, ch), border_radius=15)
-        
-        self.close_btn = pygame.Rect(cx + cw - 40, cy + 10, 30, 30)
-        x_col = (220, 220, 220) if self.close_btn.collidepoint(pygame.mouse.get_pos()) else (240, 240, 240)
-        pygame.draw.rect(screen, x_col, self.close_btn, border_radius=5)
-        screen.blit(self.parent.font_b.render("X", True, (0,0,0)), (self.close_btn.x + 8, self.close_btn.y + 1))
-        
+
+        shadow_surf = pygame.Surface((cw + 10, ch + 10), pygame.SRCALPHA)
+        pygame.draw.rect(shadow_surf, (0, 0, 0, 45), shadow_surf.get_rect(), border_radius=20)
+        screen.blit(shadow_surf, (cx - 2, cy + 8))
+        pygame.draw.rect(screen, (252, 252, 254), (cx, cy, cw, ch), border_radius=16)
+        pygame.draw.rect(screen, (210, 210, 215), (cx, cy, cw, ch), 2, border_radius=16)
+
+        self.close_btn = pygame.Rect(cx + cw - 42, cy + 12, 28, 28)
+        x_col = (210, 210, 210) if self.close_btn.collidepoint(pygame.mouse.get_pos()) else (235, 235, 235)
+        pygame.draw.rect(screen, x_col, self.close_btn, border_radius=6)
+        x_surf = self.parent.font_b.render("X", True, (80, 80, 80))
+        screen.blit(x_surf, (self.close_btn.centerx - x_surf.get_width()//2,
+                              self.close_btn.centery - x_surf.get_height()//2))
+
         title_text = self.training_data.get('name', 'Practice')
         if len(title_text) > 30: title_text = title_text[:27] + "..."
         title = self.parent.font_b.render(f"Practice: {title_text}", True, (20, 20, 20))
-        screen.blit(title, (cx + (cw - title.get_width())//2, cy + 30))
-        
+        screen.blit(title, (cx + (cw - title.get_width())//2, cy + 28))
+
         wk_img = self.parent.assets.pieces.get("wk") or self.parent.assets.pieces.get("wK")
         bk_img = self.parent.assets.pieces.get("bk") or self.parent.assets.pieces.get("bK")
         if wk_img: wk_img = pygame.transform.smoothscale(wk_img, (100, 100))
         if bk_img: bk_img = pygame.transform.smoothscale(bk_img, (100, 100))
-        
-        btn_y = cy + 100
-        w_rect = pygame.Rect(cx + 80, btn_y, 140, 140)
-        pygame.draw.rect(screen, (240, 240, 240), w_rect, border_radius=10)
-        if wk_img: screen.blit(wk_img, (w_rect.x + 20, w_rect.y + 10))
-        screen.blit(self.parent.font_s.render("Play as White", True, (0, 0, 0)), (w_rect.centerx - 35, w_rect.bottom - 25))
+
+        card_w, card_h = 155, 160
+        gap = 40
+        total = card_w * 2 + gap
+        card_start_x = cx + (cw - total) // 2
+        btn_y = cy + 82
+
+        w_rect = pygame.Rect(card_start_x, btn_y, card_w, card_h)
+        pygame.draw.rect(screen, (242, 242, 242), w_rect, border_radius=12)
+        pygame.draw.rect(screen, (210, 210, 215), w_rect, 1, border_radius=12)
+        if wk_img:
+            screen.blit(wk_img, (w_rect.centerx - wk_img.get_width()//2, w_rect.y + 16))
+        lbl = self.parent.font_s.render("Play as White", True, (30, 30, 30))
+        screen.blit(lbl, (w_rect.centerx - lbl.get_width()//2, w_rect.bottom - 28))
         self.rects["white"] = w_rect
-        
-        b_rect = pygame.Rect(cx + 280, btn_y, 140, 140)
-        pygame.draw.rect(screen, (180, 180, 180), b_rect, border_radius=10)
-        if bk_img: screen.blit(bk_img, (b_rect.x + 20, b_rect.y + 10))
-        screen.blit(self.parent.font_s.render("Play as Black", True, (0, 0, 0)), (b_rect.centerx - 35, b_rect.bottom - 25))
+
+        b_rect = pygame.Rect(card_start_x + card_w + gap, btn_y, card_w, card_h)
+        pygame.draw.rect(screen, (175, 175, 175), b_rect, border_radius=12)
+        pygame.draw.rect(screen, (140, 140, 140), b_rect, 1, border_radius=12)
+        if bk_img:
+            screen.blit(bk_img, (b_rect.centerx - bk_img.get_width()//2, b_rect.y + 16))
+        lbl = self.parent.font_s.render("Play as Black", True, (20, 20, 20))
+        screen.blit(lbl, (b_rect.centerx - lbl.get_width()//2, b_rect.bottom - 28))
         self.rects["black"] = b_rect
 
     def handle_click(self, pos):
@@ -2305,29 +3511,18 @@ class ProfilePopup(BasePopup):
         self.btn_white = None
         self.btn_black = None
         
-    def handle_scroll(self, e):
-        # FIX: Ensure accurate limits based on the ACTIVE tab
-        if self.tab == "matches":
-            item_count = len(self.ledger)
-        else:
-            item_count = len(self.practice_ledger)
-            
-        total_content_height = item_count * 60
-        
-        # Calculate exactly how much content overflows the viewable window
-        viewable_height = self.rect.height - 290
-        max_scroll_allowed = max(0, total_content_height - viewable_height)
+    def _max_scroll(self):
+        n = len(self.ledger) if self.tab == "matches" else len(self.practice_ledger)
+        return max(0, n * 60 - (self.rect.height - 290))
 
-        if e.type == pygame.MOUSEWHEEL:
-            if e.y > 0: # Scroll Up
-                self.scroll = max(0, self.scroll - 45)
-            elif e.y < 0: # Scroll Down
-                self.scroll = min(max_scroll_allowed, self.scroll + 45)
+    def handle_scroll(self, e):
+        ms = self._max_scroll()
+        delta = 0
+        if   e.type == pygame.MOUSEWHEEL:    delta = -45 if e.y > 0 else 45
         elif e.type == pygame.MOUSEBUTTONDOWN:
-            if e.button == 4: # Wheel Up
-                self.scroll = max(0, self.scroll - 45)
-            elif e.button == 5: # Wheel Down
-                self.scroll = min(max_scroll_allowed, self.scroll + 45)
+            if e.button == 4: delta = -45
+            elif e.button == 5: delta = 45
+        self.scroll = max(0, min(ms, self.scroll + delta))
 
     def draw(self, screen, fb, fm):
         self.draw_bg(screen, "My Chess Profile & Archive", fb)
@@ -2343,8 +3538,60 @@ class ProfilePopup(BasePopup):
         av = self.parent.assets.icons.get("pgnload")
         if av: screen.blit(pygame.transform.smoothscale(av, (80, 80)), (top_rect.x + 20, top_rect.y + 35))
         
-        screen.blit(self.parent.font_huge.render(str(self.parent.player_elo), True, THEME["accent"]), (top_rect.x + 120, top_rect.y + 30))
-        screen.blit(fm.render("Current Elo", True, (100, 100, 100)), (top_rect.x + 125, top_rect.y + 90))
+        screen.blit(self.parent.font_huge.render(str(self.parent.player_elo), True, THEME["accent"]),
+                    (top_rect.x + 120, top_rect.y + 18))
+        screen.blit(fm.render("Current Elo", True, (100,100,100)), (top_rect.x + 125, top_rect.y + 78))
+
+        # --- Accuracy Trend Graph (last 20 games, right side of stats box) ---
+        recent = list(reversed(self.ledger))[:20]
+        if len(recent) >= 2:
+            acc_vals = [g.get("accuracy", 0) for g in reversed(recent)]
+            gr_x = top_rect.x + 280
+            gr_y = top_rect.y + 16
+            gr_w = top_rect.width - 300
+            gr_h = top_rect.height - 32
+
+            pygame.draw.rect(screen, (248, 248, 252),
+                             pygame.Rect(gr_x, gr_y, gr_w, gr_h), border_radius=6)
+            pygame.draw.rect(screen, (210, 210, 220),
+                             pygame.Rect(gr_x, gr_y, gr_w, gr_h), 1, border_radius=6)
+
+            albl = self.parent.font_s.render("Accuracy Trend (last 20 games)", True, (100, 100, 120))
+            screen.blit(albl, (gr_x + 8, gr_y + 4))
+
+            n = len(acc_vals)
+            pts2 = []
+            for i, av in enumerate(acc_vals):
+                px2 = gr_x + 8 + int(i * (gr_w - 16) / max(1, n - 1))
+                py2 = gr_y + gr_h - 18 - int((av / 100) * (gr_h - 30))
+                pts2.append((px2, py2))
+
+            if len(pts2) >= 2:
+                # Catmull-Rom smooth green curve — no dots
+                def _cr(p0, p1, p2, p3, t):
+                    return 0.5 * (2*p1 + (-p0+p2)*t + (2*p0-5*p1+4*p2-p3)*t*t + (-p0+3*p1-3*p2+p3)*t*t*t)
+                smooth2 = [pts2[0]]
+                for i in range(1, len(pts2)):
+                    q0 = pts2[max(0, i-2)]; q1 = pts2[i-1]; q2 = pts2[i]; q3 = pts2[min(len(pts2)-1, i+1)]
+                    for s in range(1, 21):
+                        t = s / 20
+                        smooth2.append((int(_cr(q0[0],q1[0],q2[0],q3[0],t)), int(_cr(q0[1],q1[1],q2[1],q3[1],t))))
+                # Green gradient fill
+                fill2_surf = pygame.Surface((gr_w, gr_h), pygame.SRCALPHA)
+                pygame.draw.polygon(fill2_surf, (50, 200, 90, 28),
+                                    [(p[0]-gr_x, p[1]-gr_y) for p in smooth2] + [(smooth2[-1][0]-gr_x, gr_h-8), (smooth2[0][0]-gr_x, gr_h-8)])
+                screen.blit(fill2_surf, (gr_x, gr_y))
+                # AA green curve: wide faint then sharp — no dots
+                pygame.draw.lines(screen, (40, 180, 80), False, smooth2, 4)
+                pygame.draw.lines(screen, (50, 200, 90), False, smooth2, 2)
+
+            # Average line
+            avg_acc = sum(acc_vals) / len(acc_vals)
+            avg_y2 = gr_y + gr_h - 18 - int((avg_acc / 100) * (gr_h - 30))
+            pygame.draw.line(screen, (180, 180, 200), (gr_x + 8, avg_y2),
+                             (gr_x + gr_w - 8, avg_y2), 1)
+            avg_lbl = self.parent.font_s.render(f"Avg {avg_acc:.1f}%", True, (130, 130, 150))
+            screen.blit(avg_lbl, (gr_x + gr_w - avg_lbl.get_width() - 6, avg_y2 - 14))
         
         # --- 2. Action Buttons & Tabs ---
         bar_y = top_rect.bottom + 20
@@ -2352,12 +3599,14 @@ class ProfilePopup(BasePopup):
         self.btn_tab_matches = pygame.Rect(self.rect.x + 20, bar_y, 140, 35)
         col_m = THEME["accent"] if self.tab == "matches" else (220, 220, 220)
         pygame.draw.rect(screen, col_m, self.btn_tab_matches, border_radius=6)
-        screen.blit(fm.render("Matches", True, (255,255,255) if self.tab=="matches" else (0,0,0)), (self.btn_tab_matches.x+40, self.btn_tab_matches.y+8))
-        
+        t = fm.render("Matches", True, (255,255,255) if self.tab=="matches" else (0,0,0))
+        screen.blit(t, (self.btn_tab_matches.centerx - t.get_width()//2, self.btn_tab_matches.centery - t.get_height()//2))
+
         self.btn_tab_practice = pygame.Rect(self.rect.x + 170, bar_y, 140, 35)
         col_p = THEME["accent"] if self.tab == "practice" else (220, 220, 220)
         pygame.draw.rect(screen, col_p, self.btn_tab_practice, border_radius=6)
-        screen.blit(fm.render("Practice", True, (255,255,255) if self.tab=="practice" else (0,0,0)), (self.btn_tab_practice.x+40, self.btn_tab_practice.y+8))
+        t = fm.render("Practice", True, (255,255,255) if self.tab=="practice" else (0,0,0))
+        screen.blit(t, (self.btn_tab_practice.centerx - t.get_width()//2, self.btn_tab_practice.centery - t.get_height()//2))
         
         if self.tab == "matches":
             self.btn_sort = pygame.Rect(self.rect.x + 330, bar_y, 150, 35)
@@ -2385,7 +3634,7 @@ class ProfilePopup(BasePopup):
             screen.blit(status_surf, (sx, sy))
 
         # --- 3. Match / Practice History List ---
-        list_rect = pygame.Rect(self.rect.x + 20, bar_y + 50, self.rect.width - 40, self.rect.height - 290)
+        list_rect = pygame.Rect(self.rect.x + 20, bar_y + 45, self.rect.width - 40, self.rect.height - (bar_y + 45 - self.rect.y) - 20)
         pygame.draw.rect(screen, (255, 255, 255), list_rect, border_radius=8)
         screen.set_clip(list_rect)
         
@@ -2531,21 +3780,34 @@ class ProfilePopup(BasePopup):
                 
         screen.set_clip(None)
 
+        # ── Scrollbar ─────────────────────────────────────────────────────────
+        _ms2 = self._max_scroll()
+        if _ms2 > 0:
+            sb_x = list_rect.right - 6
+            sb_h = list_rect.height
+            th_h = max(24, int(sb_h*(sb_h/(sb_h+_ms2))))
+            th_y = list_rect.y + int((self.scroll/_ms2)*(sb_h-th_h))
+            pygame.draw.rect(screen,(212,212,220),pygame.Rect(sb_x,list_rect.y,5,sb_h),border_radius=3)
+            pygame.draw.rect(screen,(158,158,178),pygame.Rect(sb_x,th_y,5,th_h),border_radius=3)
+
         # --- 4. Mini Prompt overlay for Color Selection ---
         if self.pending_import_path:
             ov = pygame.Surface(screen.get_size(), pygame.SRCALPHA); ov.fill((0,0,0,150)); screen.blit(ov, (0,0))
             prompt = pygame.Rect(cx - 150, self.rect.centery - 80, 300, 160)
             pygame.draw.rect(screen, (255, 255, 255), prompt, border_radius=12)
-            screen.blit(fb.render("Which side did you play?", True, (0,0,0)), (prompt.x + 50, prompt.y + 20))
-            
+            prompt_title = fb.render("Which side did you play?", True, (0,0,0))
+            screen.blit(prompt_title, (prompt.centerx - prompt_title.get_width()//2, prompt.y + 20))
+
             self.btn_white = pygame.Rect(prompt.x + 20, prompt.y + 80, 120, 45)
             pygame.draw.rect(screen, (240, 240, 240), self.btn_white, border_radius=8)
             pygame.draw.rect(screen, (100, 100, 100), self.btn_white, 1, border_radius=8)
-            screen.blit(fb.render("White", True, (0,0,0)), (self.btn_white.x + 35, self.btn_white.y + 12))
-            
+            t = fb.render("White", True, (0,0,0))
+            screen.blit(t, (self.btn_white.centerx - t.get_width()//2, self.btn_white.centery - t.get_height()//2))
+
             self.btn_black = pygame.Rect(prompt.right - 140, prompt.y + 80, 120, 45)
             pygame.draw.rect(screen, (40, 40, 40), self.btn_black, border_radius=8)
-            screen.blit(fb.render("Black", True, (255,255,255)), (self.btn_black.x + 35, self.btn_black.y + 12))
+            t = fb.render("Black", True, (255,255,255))
+            screen.blit(t, (self.btn_black.centerx - t.get_width()//2, self.btn_black.centery - t.get_height()//2))
 
     def handle_click(self, pos):
         # Handle Mini Prompt
@@ -2599,20 +3861,22 @@ class AnalyzePromptPopup(BasePopup):
     def draw(self, screen, fb, fm):
         self.draw_bg(screen, "Game Already Analyzed!", fb)
         cx, cy = self.rect.centerx, self.rect.centery
-        
-        txt = fm.render("This PGN already contains LucasChess evaluations.", True, (50,50,50))
-        screen.blit(txt, (cx - txt.get_width()//2, cy - 30))
+
+        txt = fm.render("This PGN already contains Chess evaluations.", True, (50,50,50))
+        screen.blit(txt, (cx - txt.get_width()//2, cy - 35))
         txt2 = fb.render("Do you want to run a Full Deep Analysis again?", True, (20,20,20))
-        screen.blit(txt2, (cx - txt2.get_width()//2, cy - 5))
-        
-        # YES Button (Deep Scan) - Widened to 170
-        self.btn_yes = pygame.Rect(cx - 180, cy + 40, 170, 45)
+        screen.blit(txt2, (cx - txt2.get_width()//2, cy - 8))
+
+        btn_w, btn_h = 170, 45
+        gap = 20
+        bx = cx - (btn_w * 2 + gap) // 2
+
+        self.btn_yes = pygame.Rect(bx, cy + 38, btn_w, btn_h)
         pygame.draw.rect(screen, (200, 80, 80), self.btn_yes, border_radius=8)
         t_yes = fb.render("Yes (Deep Scan)", True, (255,255,255))
         screen.blit(t_yes, (self.btn_yes.centerx - t_yes.get_width()//2, self.btn_yes.centery - t_yes.get_height()//2))
 
-        # NO Button (Fast Import) - Widened to 170
-        self.btn_no = pygame.Rect(cx + 10, cy + 40, 170, 45)
+        self.btn_no = pygame.Rect(bx + btn_w + gap, cy + 38, btn_w, btn_h)
         pygame.draw.rect(screen, (60, 160, 60), self.btn_no, border_radius=8)
         t_no = fb.render("No (Fast Import)", True, (255,255,255))
         screen.blit(t_no, (self.btn_no.centerx - t_no.get_width()//2, self.btn_no.centery - t_no.get_height()//2))
@@ -2663,8 +3927,8 @@ class FastImportLoadingPopup(BasePopup):
         if fill_w > 0:
             pygame.draw.rect(screen, (60, 200, 60), (bar_x, bar_y, fill_w, bar_h), border_radius=12)
         
-        pct_txt = fm.render(f"{self.progress}%", True, (0, 0, 0))
-        screen.blit(pct_txt, (self.rect.centerx - pct_txt.get_width()//2, bar_y + 35))
+        pct_txt = fm.render(f"{self.progress}%", True, (60, 60, 60))
+        screen.blit(pct_txt, (self.rect.centerx - pct_txt.get_width()//2, bar_y + bar_h + 10))
 
     def handle_click(self, pos): pass
     def handle_input(self, e): pass
@@ -2686,21 +3950,24 @@ class UnsavedAnalysisPopup(BasePopup):
         txt2 = self.parent.font_s.render("(Saves the moves and any analysis to a file)", True, (100,100,100))
         screen.blit(txt2, (cx - txt2.get_width()//2, cy - 5))
         
-        # --- FIX: Removed Cancel Button & Centered the remaining 3 ---
-        self.btn_save = pygame.Rect(cx - 185, cy + 40, 110, 45)
+        btn_w, btn_h = 110, 45
+        gap = 15
+        bx = cx - (btn_w * 3 + gap * 2) // 2
+
+        self.btn_save = pygame.Rect(bx, cy + 38, btn_w, btn_h)
         pygame.draw.rect(screen, (60, 180, 60), self.btn_save, border_radius=8)
-        t_save = fb.render("Save", True, (255,255,255))
-        screen.blit(t_save, (self.btn_save.centerx - t_save.get_width()//2, self.btn_save.centery - t_save.get_height()//2))
+        t = fb.render("Save", True, (255,255,255))
+        screen.blit(t, (self.btn_save.centerx - t.get_width()//2, self.btn_save.centery - t.get_height()//2))
 
-        self.btn_save_as = pygame.Rect(cx - 55, cy + 40, 110, 45)
+        self.btn_save_as = pygame.Rect(bx + btn_w + gap, cy + 38, btn_w, btn_h)
         pygame.draw.rect(screen, (40, 140, 200), self.btn_save_as, border_radius=8)
-        t_save_as = fb.render("Save As...", True, (255,255,255))
-        screen.blit(t_save_as, (self.btn_save_as.centerx - t_save_as.get_width()//2, self.btn_save_as.centery - t_save_as.get_height()//2))
+        t = fb.render("Save As...", True, (255,255,255))
+        screen.blit(t, (self.btn_save_as.centerx - t.get_width()//2, self.btn_save_as.centery - t.get_height()//2))
 
-        self.btn_discard = pygame.Rect(cx + 75, cy + 40, 110, 45)
+        self.btn_discard = pygame.Rect(bx + (btn_w + gap) * 2, cy + 38, btn_w, btn_h)
         pygame.draw.rect(screen, (200, 60, 60), self.btn_discard, border_radius=8)
-        t_no = fb.render("Discard", True, (255,255,255))
-        screen.blit(t_no, (self.btn_discard.centerx - t_no.get_width()//2, self.btn_discard.centery - t_no.get_height()//2))
+        t = fb.render("Discard", True, (255,255,255))
+        screen.blit(t, (self.btn_discard.centerx - t.get_width()//2, self.btn_discard.centery - t.get_height()//2))
 
     def handle_click(self, pos):
         if self.close_btn and self.close_btn.collidepoint(pos): self.active = False; return
@@ -2815,14 +4082,6 @@ class LoadGamePopup(BasePopup):
         pygame.draw.rect(screen, THEME["accent"], header, border_top_left_radius=10, border_top_right_radius=10)
         screen.blit(fb.render("Import Chess Game", True, (255, 255, 255)), (header.x + 30, header.y + 22))
         
-        # Save Button
-        save_btn = pygame.Rect(self.rect.x + 30, self.rect.y + self.h - 60, 100, 35)
-        save_color = (50, 150, 50) if save_btn.collidepoint(pygame.mouse.get_pos()) else (40, 120, 40)
-        pygame.draw.rect(screen, save_color, save_btn, border_radius=6)
-        save_text = self.parent.font_s.render("Save Settings", True, (255, 255, 255))
-        screen.blit(save_text, (save_btn.x + 15, save_btn.y + 8))
-        self.save_btn = save_btn
-        
         # Close Button
         self.close_btn = pygame.Rect(self.rect.x + self.w - 100, self.rect.y + 10, 80, 30)
         pygame.draw.rect(screen, (200, 100, 100), self.close_btn, border_radius=5)
@@ -2869,18 +4128,35 @@ class LoadGamePopup(BasePopup):
             screen.blit(f_txt, (self.btn_file.centerx - f_txt.get_width()//2, self.btn_file.centery - f_txt.get_height()//2))
 
         if self.attached_file:
-            dn = self.attached_filename if len(self.attached_filename) <= 35 else self.attached_filename[:32] + "..."
-            itx = fm.render(f"📎 Attached! {dn}", True, (20, 140, 40))
-            screen.blit(itx, (self.rect.x + 30, self.rect.bottom - 55))
+            # --- DYNAMIC FILENAME TRUNCATION ---
+            max_text_w = self.rect.width - 110  # Max width for text (leaves room for X button)
+            display_text = f"Attached {self.attached_filename}"
+            itx = fm.render(display_text, True, (20, 140, 40))
             
-            self.btn_clear_file = pygame.Rect(self.rect.x + 40 + itx.get_width(), self.rect.bottom - 60, 25, 25)
+            # Shrink the filename character by character until it fits perfectly
+            if itx.get_width() > max_text_w:
+                truncated = self.attached_filename
+                while itx.get_width() > max_text_w and len(truncated) > 1:
+                    truncated = truncated[:-1]
+                    display_text = f"File Attached! {truncated}..."
+                    itx = fm.render(display_text, True, (20, 140, 40))
+            
+            text_x = self.rect.x + 30
+            text_y = self.rect.bottom - 100  # Pushed up slightly to fit the centered Load button
+            screen.blit(itx, (text_x, text_y))
+            
+            # Clear [X] Button dynamically positioned right after the text
+            self.btn_clear_file = pygame.Rect(text_x + itx.get_width() + 15, text_y - 2, 25, 25)
             pygame.draw.rect(screen, (255, 100, 100), self.btn_clear_file, border_radius=4)
             cx_txt = fb.render("X", True, (255, 255, 255))
             screen.blit(cx_txt, (self.btn_clear_file.centerx - cx_txt.get_width()//2, self.btn_clear_file.centery - cx_txt.get_height()//2))
         else:
             self.btn_clear_file = None
 
-        # 5. Load Button (Dynamic Color)
+        # 5. Load Button (Centered at Bottom)
+        btn_w, btn_h = 240, 50
+        self.btn_load = pygame.Rect(self.rect.centerx - btn_w // 2, self.rect.bottom - 65, btn_w, btn_h)
+
         if state != "empty":
             load_col = (40, 200, 80) if self.btn_load.collidepoint(pygame.mouse.get_pos()) else (50, 180, 70)
             pygame.draw.rect(screen, load_col, self.btn_load, border_radius=10)
@@ -3128,7 +4404,12 @@ class LoadGamePopup(BasePopup):
                 import io
                 try:
                     game = chess.pgn.read_game(io.StringIO(self.pgn_text))
-                    if game: self.parent.trigger_auto_analysis(game)
+                    if game:
+                        self.parent.trigger_auto_analysis(game)
+                        self.active = False
+                    else:
+                        from tkinter import messagebox
+                        messagebox.showerror("Import Error", "Could not parse PGN. Please check the text and try again.")
                 except Exception as e: print(e)
                 self.active = False
             elif state == "fen":
@@ -3156,6 +4437,820 @@ class LoadGamePopup(BasePopup):
             self.parent.sound_manager.play("game_start")
         except: pass
         
+# =============================================================================
+#  POSITION COMPLEXITY POPUP  (H key)
+# =============================================================================
+class ComplexityPopup:
+    """Live position complexity score with per-side hanging pieces and bar descriptions.
+    Toggle with H key; close with the × button or press H again."""
+
+    def __init__(self, parent):
+        self.parent     = parent
+        self.active     = True
+        w, h            = 400, 460
+        self.rect       = pygame.Rect(parent.width - w - 18,
+                                      getattr(parent, 'bd_y', 80), w, h)
+        self.close_btn  = None
+        self._last_fen  = None
+        self._cache     = None
+        self._font_big  = None   # cached to avoid per-frame font creation (Bug B6)
+
+    # ------------------------------------------------------------------
+    def _big_font(self):
+        """Return the 40-pt bold font, creating it once and caching it."""
+        if self._font_big is None:
+            self._font_big = pygame.font.SysFont("Segoe UI", 40, bold=True)
+        return self._font_big
+
+    # ------------------------------------------------------------------
+    def _compute(self):
+        """Compute complexity data including per-side hanging piece lists."""
+        try:
+            vp   = getattr(self.parent, 'view_ply', 0)
+            hist = getattr(self.parent, 'history', [])
+            board = chess.Board()
+            for i in range(min(vp, len(hist))):
+                if isinstance(hist[i], dict) and "move" in hist[i]:
+                    board.push(hist[i]["move"])
+
+            fen = board.fen()
+            if fen == self._last_fen and self._cache is not None:
+                return self._cache
+            self._last_fen = fen
+
+            legal   = list(board.legal_moves)
+            n_legal = len(legal)
+
+            # Per-side hanging piece detection (Bug B3 fix)
+            white_hanging, black_hanging = [], []
+            for sq in chess.SQUARES:
+                p = board.piece_at(sq)
+                if p and board.is_attacked_by(not p.color, sq) \
+                       and not board.is_attacked_by(p.color, sq):
+                    label = chess.piece_symbol(p.piece_type).upper() + chess.square_name(sq)
+                    if p.color == chess.WHITE:
+                        white_hanging.append(label)
+                    else:
+                        black_hanging.append(label)
+            hanging = len(white_hanging) + len(black_hanging)
+
+            n_caps  = sum(1 for m in legal if board.is_capture(m))
+            n_chks  = sum(1 for m in legal if board.gives_check(m))
+
+            pcs_left = sum(1 for sq in chess.SQUARES
+                           if (p := board.piece_at(sq)) and p.piece_type != chess.PAWN)
+            phase = "Opening" if pcs_left >= 12 else ("Middlegame" if pcs_left >= 6 else "Endgame")
+            pm    = {"Opening": 0.7, "Middlegame": 1.0, "Endgame": 0.85}[phase]
+            mob   = min(100, int(n_legal * 2.5))
+            ten   = min(100, int(hanging * 20 + n_caps * 8))
+            tac   = min(100, int(n_chks * 25 + n_caps * 6))
+            overall = min(100, int((mob * 0.3 + ten * 0.45 + tac * 0.25) * pm))
+
+            self._cache = {
+                "overall": overall, "mobility": mob, "tension": ten, "tactics": tac,
+                "phase": phase, "hanging": hanging,
+                "white_hanging": white_hanging, "black_hanging": black_hanging,
+                "captures": n_caps, "checks": n_chks, "legal": n_legal,
+            }
+            return self._cache
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    def _bar_descriptions(self, d):
+        """Return one-line descriptions for Mobility, Tension, Tactics (Bug B4 fix)."""
+        eval_val = getattr(self.parent, 'eval_val', 0)
+        favors   = ""
+        if abs(eval_val) > 150:
+            favors = f", favors {'White' if eval_val > 0 else 'Black'}"
+
+        mob  = d["mobility"]
+        if mob >= 75:
+            mob_desc = f"Very active — {d['legal']} moves available{favors}"
+        elif mob >= 45:
+            mob_desc = f"Moderate piece activity — {d['legal']} moves{favors}"
+        else:
+            mob_desc = f"Restricted — only {d['legal']} legal moves{favors}"
+
+        h, caps = d["hanging"], d["captures"]
+        ten = d["tension"]
+        if ten >= 60:
+            ten_desc = f"{h} hanging, {caps} captures — very sharp{favors}"
+        elif ten > 0:
+            ten_desc = f"{h} hanging piece{'s' if h != 1 else ''}, {caps} capture{'s' if caps != 1 else ''}{favors}"
+        else:
+            ten_desc = "No hanging pieces — calm position"
+
+        chks = d["checks"]
+        tac = d["tactics"]
+        if tac >= 60:
+            tac_desc = f"{chks} check{'s' if chks != 1 else ''} + {caps} captures — tactical fireworks"
+        elif tac > 0:
+            tac_desc = f"{chks} checking move{'s' if chks != 1 else ''}, {caps} captures — some forcing lines"
+        else:
+            tac_desc = "No immediate forcing moves"
+
+        return mob_desc, ten_desc, tac_desc
+
+    # ------------------------------------------------------------------
+    def draw(self, screen, fb, fm):
+        if not self.active:
+            return
+
+        fs = self.parent.font_s
+
+        # Panel background
+        pygame.draw.rect(screen, (244, 244, 250), self.rect, border_radius=14)
+        pygame.draw.rect(screen, (188, 188, 202), self.rect, 2, border_radius=14)
+
+        # ── Title row ──────────────────────────────────────────────────
+        title = fb.render("Position Complexity", True, (35, 35, 42))
+        screen.blit(title, (self.rect.x + 14, self.rect.y + 13))
+
+        # Close button — far right (Bug B8: placed first so hint can avoid it)
+        self.close_btn = pygame.Rect(self.rect.right - 46, self.rect.y + 10, 30, 30)
+        close_icon = self.parent.assets.icons.get("close_btn")
+        if not close_icon:
+            try:
+                p = os.path.join('assets', 'icons', 'close_btn.png')
+                if os.path.exists(p):
+                    img = pygame.image.load(p).convert_alpha()
+                    self.parent.assets.icons['close_btn'] = img
+                    close_icon = img
+            except Exception:
+                close_icon = None
+        if close_icon:
+            if self.close_btn.collidepoint(pygame.mouse.get_pos()):
+                pygame.draw.rect(screen, (230, 230, 235), self.close_btn, border_radius=6)
+            screen.blit(pygame.transform.smoothscale(close_icon, (self.close_btn.w, self.close_btn.h)),
+                        (self.close_btn.x, self.close_btn.y))
+        else:
+            is_hover = self.close_btn.collidepoint(pygame.mouse.get_pos())
+            pygame.draw.rect(screen, (240, 80, 80) if is_hover else (225, 225, 230),
+                             self.close_btn, border_radius=8)
+            x_surf = fb.render("X", True, (255, 255, 255) if is_hover else (100, 100, 100))
+            screen.blit(x_surf, (self.close_btn.centerx - x_surf.get_width() // 2,
+                                 self.close_btn.centery - x_surf.get_height() // 2))
+
+        # H-toggle hint — snug to left of close button (Bug B8 fix)
+        hint = fs.render("H to toggle", True, (158, 158, 172))
+        screen.blit(hint, (self.close_btn.x - hint.get_width() - 8, self.rect.y + 15))
+
+        # Thin separator under the title bar
+        pygame.draw.line(screen, (212, 212, 222),
+                         (self.rect.x + 10, self.rect.y + 42),
+                         (self.rect.right - 10, self.rect.y + 42))
+
+        d = self._compute()
+        if not d:
+            screen.blit(fm.render("No position loaded.", True, (130, 130, 130)),
+                        (self.rect.x + 18, self.rect.y + 60))
+            return
+
+        y   = self.rect.y + 52
+        pad = 16
+
+        # ── Overall score ───────────────────────────────────────────────
+        ov = d["overall"]
+        oc = (50, 178, 50) if ov >= 70 else (218, 168, 38) if ov >= 40 else (198, 58, 58)
+        big = self._big_font().render(str(ov), True, oc)      # Bug B6 fix: cached font
+        screen.blit(big, (self.rect.x + pad, y))
+
+        # "/ 100" vertically aligned to big font's baseline (Bug B7 fix)
+        lbl100 = fs.render("/ 100", True, (105, 105, 118))
+        screen.blit(lbl100, (self.rect.x + pad + big.get_width() + 8,
+                              y + big.get_height() - lbl100.get_height() - 2))
+
+        # Phase pill
+        pc = {"Opening": (78, 138, 218),
+              "Middlegame": (218, 128, 38),
+              "Endgame": (78, 158, 98)}[d["phase"]]
+        pr = pygame.Rect(self.rect.right - 118, y + 4, 100, 26)
+        pygame.draw.rect(screen, pc, pr, border_radius=12)
+        pt = fs.render(d["phase"], True, (255, 255, 255))
+        screen.blit(pt, (pr.centerx - pt.get_width() // 2,
+                         pr.centery - pt.get_height() // 2))
+
+        y += big.get_height() + 10
+
+        # Separator
+        pygame.draw.line(screen, (218, 218, 228),
+                         (self.rect.x + pad, y), (self.rect.right - pad, y))
+        y += 10
+
+        # ── Sub-bars (label + description + bar) ────────────────────────
+        mob_desc, ten_desc, tac_desc = self._bar_descriptions(d)
+        bw = self.rect.width - pad * 2
+        bar_items = [
+            ("Mobility", d["mobility"], (78, 128, 212), mob_desc),
+            ("Tension",  d["tension"],  (212, 98, 58),  ten_desc),
+            ("Tactics",  d["tactics"],  (158, 68, 198), tac_desc),
+        ]
+        for lbl, val, col, desc in bar_items:
+            # Label + numeric value on same row
+            lbl_s = fm.render(lbl, True, (58, 58, 70))
+            val_s = fs.render(str(val), True, (82, 82, 92))
+            screen.blit(lbl_s, (self.rect.x + pad, y))
+            screen.blit(val_s, (self.rect.right - pad - val_s.get_width(), y + 2))
+            y += lbl_s.get_height() + 3
+
+            # Description line (Bug B4 fix)
+            desc_s = fs.render(desc, True, (118, 118, 140))
+            screen.blit(desc_s, (self.rect.x + pad, y))
+            y += desc_s.get_height() + 6  # gap between description and bar (Bug B5 fix)
+
+            # Progress bar
+            pygame.draw.rect(screen, (215, 215, 222),
+                             pygame.Rect(self.rect.x + pad, y, bw, 9), border_radius=4)
+            fw = int((val / 100) * bw)
+            if fw > 0:
+                pygame.draw.rect(screen, col,
+                                 pygame.Rect(self.rect.x + pad, y, fw, 9), border_radius=4)
+            y += 20   # bar height + breathing room below bar
+
+        # ── Stats row ────────────────────────────────────────────────────
+        pygame.draw.line(screen, (210, 210, 218),
+                         (self.rect.x + pad, y), (self.rect.right - pad, y))
+        y += 9
+        stats = f"Legal: {d['legal']}   Captures: {d['captures']}   Checks: {d['checks']}"
+        screen.blit(fs.render(stats, True, (112, 112, 124)), (self.rect.x + pad, y))
+        y += fs.get_height() + 8
+
+        # ── Hanging pieces (Bug B3 fix) ───────────────────────────────────
+        wh = d["white_hanging"]
+        bh = d["black_hanging"]
+
+        hang_title = fm.render("Hanging Pieces", True, (58, 58, 70))
+        screen.blit(hang_title, (self.rect.x + pad, y))
+        y += hang_title.get_height() + 4
+
+        if not wh and not bh:
+            screen.blit(fs.render("None — position is safe", True, (90, 160, 90)),
+                        (self.rect.x + pad, y))
+        else:
+            # White hanging
+            if wh:
+                pieces_str = ", ".join(wh[:6]) + ("…" if len(wh) > 6 else "")
+                w_line = f"White ({len(wh)}):  {pieces_str}"
+            else:
+                w_line = "White:  none"
+            ws = fs.render(w_line, True, (60, 80, 200))
+            screen.blit(ws, (self.rect.x + pad, y))
+            y += ws.get_height() + 3
+
+            # Black hanging
+            if bh:
+                pieces_str = ", ".join(bh[:6]) + ("…" if len(bh) > 6 else "")
+                b_line = f"Black ({len(bh)}):  {pieces_str}"
+            else:
+                b_line = "Black:  none"
+            bs = fs.render(b_line, True, (200, 55, 55))
+            screen.blit(bs, (self.rect.x + pad, y))
+
+    # ------------------------------------------------------------------
+    def handle_click(self, pos):
+        if self.close_btn and self.close_btn.collidepoint(pos):
+            self.active = False
+
+    def handle_scroll(self, e):
+        pass
+
+# =============================================================================
+#  ACCOUNT POPUP
+# =============================================================================
+class AccountPopup(BasePopup):
+    def __init__(self, parent):
+        super().__init__(parent, 1100, 760)
+        self.accounts         = self._load_accounts()
+        self.selected_account = self.accounts[0]["username"] if self.accounts else None
+        self.sort_key  = "date"
+        self.sort_asc  = False
+        self.page      = 0
+        self.per_page  = 8
+        self.scroll_acc= 0
+        self.zones     = []
+        self.btn_prev  = None
+        self.btn_next  = None
+        self.btn_add_account = None
+
+    def _load_accounts(self):
+        import json, glob
+        acc_dir = os.path.join("assets","accounts")
+        accs = []
+        if not os.path.exists(acc_dir): return accs
+        for path in glob.glob(os.path.join(acc_dir,"*.json")):
+            try:
+                with open(path,"r",encoding="utf-8") as f: data=json.load(f)
+                if isinstance(data,dict): accs.append(data)
+            except Exception: pass
+        return accs
+
+    def _get_account(self):
+        for a in self.accounts:
+            if a.get("username")==self.selected_account: return a
+        return None
+
+    def _games_for(self, acc):
+        games = list(acc.get("games", []))
+        # Compute rating_change dynamically from chronological order.
+        # Use original list index as same-date tiebreaker to preserve API sequence.
+        try:
+            indexed = [(i, g) for i, g in enumerate(games)]
+            chrono = sorted(indexed, key=lambda ig: (ig[1].get("date", ""), ig[0]))
+            chrono_games = [g for _, g in chrono]
+            for i in range(len(chrono_games)):
+                prev_r = chrono_games[i - 1].get("rating") if i > 0 else None
+                curr_r = chrono_games[i].get("rating")
+                if i == 0 or prev_r is None or curr_r is None:
+                    chrono_games[i] = dict(chrono_games[i], rating_change=0)
+                else:
+                    try:
+                        change = int(curr_r) - int(prev_r)
+                        # Per-game ELO swings above ±100 are impossible on chess.com/lichess;
+                        # clamp them to 0 so broken sequence ordering doesn't produce garbage.
+                        if abs(change) > 100:
+                            change = 0
+                        chrono_games[i] = dict(chrono_games[i], rating_change=change)
+                    except (TypeError, ValueError):
+                        chrono_games[i] = dict(chrono_games[i], rating_change=0)
+            games = chrono_games
+        except Exception:
+            pass
+        k = {"date": "date", "rating": "rating", "result": "result"}.get(self.sort_key, "date")
+        try:
+            games = sorted(games, key=lambda g: g.get(k, ""), reverse=not self.sort_asc)
+        except Exception:
+            pass
+        return games
+
+    def _delete_account(self, username):
+        """Delete an account and its associated files"""
+        import glob
+        try:
+            # Delete account JSON file
+            safe = "".join(c for c in username if c.isalnum() or c in "_-")
+            acc_file = os.path.join("assets", "accounts", f"{safe}.json")
+            if os.path.exists(acc_file):
+                os.remove(acc_file)
+            
+            # Delete associated PGN files
+            pgn_files = glob.glob(os.path.join("assets", "downloads", f"*{safe}.pgn"))
+            for pgn in pgn_files:
+                try:
+                    os.remove(pgn)
+                except:
+                    pass
+            
+            # Reload accounts list
+            self.accounts = self._load_accounts()
+            
+            # Update selected account
+            if self.selected_account == username:
+                self.selected_account = self.accounts[0]["username"] if self.accounts else None
+            
+            self.page = 0
+        except Exception as e:
+            print(f"Error deleting account: {e}")
+
+    def draw(self, screen, fb, fm):
+        self.draw_bg(screen,"My Online Accounts",fb)
+        
+        # --- FIX: Replace default close button with 'Close' text button ---
+        pygame.draw.rect(screen, (252, 252, 254), (self.rect.right - 60, self.rect.y + 8, 55, 45), border_top_right_radius=16)
+        self.close_btn = pygame.Rect(self.rect.right - 100, self.rect.y + 10, 80, 30)
+        pygame.draw.rect(screen, (200, 100, 100), self.close_btn, border_radius=5)
+        close_text = self.parent.font_s.render("Close", True, (255, 255, 255))
+        screen.blit(close_text, (self.close_btn.x + 20, self.close_btn.y + 5))
+        
+        self.zones=[]
+        PAD=18; lw=290
+        rx=self.rect.x+lw+PAD*2; rw=self.rect.width-lw-PAD*3
+        ty=self.rect.y+66; by=self.rect.bottom-20
+
+        # ── Left: account list ────────────────────────────────────────────────
+        lr=pygame.Rect(self.rect.x+PAD,ty,lw,by-ty)
+        pygame.draw.rect(screen,(248,248,252),lr,border_radius=10)
+        pygame.draw.rect(screen,(210,210,220),lr,1,border_radius=10)
+        
+        # Header with ACCOUNTS label
+        header_surf = fm.render("Accounts", True, (60,60,70))
+        screen.blit(header_surf, (lr.x+14, lr.y+10))
+
+        # + Add Account button - improved styling
+        self.btn_add_account = pygame.Rect(lr.right - 108, lr.y + 8, 100, 24)
+        btn_hover = self.btn_add_account.collidepoint(pygame.mouse.get_pos())
+        add_col = (55, 135, 225) if btn_hover else (75, 160, 245)
+        pygame.draw.rect(screen, add_col, self.btn_add_account, border_radius=6)
+        add_txt = self.parent.font_s.render("+ Add", True, (255, 255, 255))
+        screen.blit(add_txt, (self.btn_add_account.centerx - add_txt.get_width() // 2,
+                               self.btn_add_account.centery - add_txt.get_height() // 2))
+
+        ac=pygame.Rect(lr.x,lr.y+38,lr.width,lr.height-38)
+        pygame.draw.rect(screen,(255,255,255),ac,border_radius=8)
+        # Clamp scroll: only scroll if content taller than the visible area
+        _total_acc_h = len(self.accounts) * 54
+        _max_acc_scroll = max(0, _total_acc_h - ac.height)
+        self.scroll_acc = max(0, min(self.scroll_acc, _max_acc_scroll))
+        screen.set_clip(ac)
+        ay=ac.y-self.scroll_acc
+        
+        for idx, acc in enumerate(self.accounts):
+            un=acc.get("username","?"); site=acc.get("site","?")
+            row=pygame.Rect(lr.x+3,ay,lr.width-6,50)
+            is_sel=(un==self.selected_account)
+            
+            # Improved row background
+            if is_sel:
+                bg2=(215,228,255)
+                pygame.draw.rect(screen,bg2,row,border_radius=7)
+                pygame.draw.rect(screen,(85,135,215),row,2,border_radius=7)
+            elif row.collidepoint(pygame.mouse.get_pos()):
+                bg2=(235,240,250)
+                pygame.draw.rect(screen,bg2,row,border_radius=7)
+            else:
+                bg2=(255,255,255) if idx % 2 == 0 else (250,251,254)
+                pygame.draw.rect(screen,bg2,row,border_radius=7)
+            
+            # Draw Site Icon with fallback
+            site_key = "lichess" if "lichess" in site.lower() else "chess_com"
+            icon = self.parent.assets.icons.get(site_key)
+            tx = row.x + 12
+            
+            if icon:
+                try:
+                    scaled_icon = pygame.transform.smoothscale(icon, (34, 34))
+                    screen.blit(scaled_icon, (row.x + 10, row.y + 8))
+                    tx = row.x + 52
+                except:
+                    tx = row.x + 12
+            else:
+                # Fallback circle with color
+                col = (100, 150, 220) if site_key == "lichess" else (100, 180, 100)
+                pygame.draw.circle(screen, col, (row.x + 26, row.y + 25), 17)
+                tx = row.x + 52
+                
+            # Username and site
+            un_surf = fb.render(un, True, (20,20,30))
+            screen.blit(un_surf, (tx, row.y + 6))
+            site_surf = self.parent.font_s.render(site, True, (140,140,155))
+            screen.blit(site_surf, (tx, row.y + 28))
+            
+            # Delete button on the right side of row
+            del_btn = pygame.Rect(row.right - 36, row.y + 6, 28, 38)
+            del_hover = del_btn.collidepoint(pygame.mouse.get_pos())
+            del_col = (220, 80, 80) if del_hover else (210, 100, 100)
+            pygame.draw.rect(screen, del_col, del_btn, border_radius=5)
+            del_txt = self.parent.font_s.render("✕", True, (255, 255, 255))
+            screen.blit(del_txt, del_txt.get_rect(center=del_btn.center))
+            self.zones.append((del_btn, "delete_acc", un))
+            
+            self.zones.append((row,"select_acc",un))
+            ay+=54
+        screen.set_clip(None)
+
+        # ── Right: elo graph + game list ──────────────────────────────────────
+        acc=self._get_account()
+        if not acc:
+            screen.blit(fm.render("No account selected.",True,(140,140,152)),(rx+20,ty+40)); return
+
+        games=self._games_for(acc)
+        tp=max(1,(len(games)+self.per_page-1)//self.per_page)
+        self.page=max(0,min(self.page,tp-1))
+
+        # Header
+        screen.blit(fb.render(f"{acc.get('username','?')}  —  {acc.get('site','?')}",True,(30,30,42)),(rx,ty-22))
+
+        # Elo graph - improved rendering with smooth curves
+        gh=160; gr=pygame.Rect(rx,ty,rw,gh)
+        pygame.draw.rect(screen,(252,252,254),gr,border_radius=8)
+        pygame.draw.rect(screen,(220,220,228),gr,1,border_radius=8)
+        
+        # Extract ratings and build visualization
+        elos=[g.get("rating") for g in games if g.get("rating") is not None and g.get("rating", 0) > 0]
+        
+        if len(elos) >= 1:
+            # Calculate scaling
+            if len(elos) == 1:
+                mn, mx = elos[0] - 50, elos[0] + 50
+            else:
+                mn, mx = min(elos), max(elos)
+            
+            span = max(1, mx - mn)
+            
+            # Graph area with padding
+            ga2 = pygame.Rect(gr.x + 20, gr.y + 28, gr.width - 40, gh - 48)
+            
+            # Draw background with subtle grid
+            pygame.draw.rect(screen, (250, 251, 253), ga2, border_radius=4)
+            
+            # Draw horizontal grid lines
+            grid_lines = 4
+            for i in range(grid_lines + 1):
+                y_pos = ga2.y + (i * ga2.height // grid_lines)
+                alpha = 180 if i == 0 or i == grid_lines else 120
+                pygame.draw.line(screen, (235, 235, 240), (ga2.x, y_pos), (ga2.right, y_pos), 1)
+            
+            # Calculate points
+            pts_g = []
+            for i, v in enumerate(elos):
+                if len(elos) == 1:
+                    px = ga2.centerx
+                else:
+                    px = ga2.x + int(i * ga2.width / max(1, len(elos) - 1))
+                py = ga2.bottom - int((v - mn) / span * ga2.height)
+                pts_g.append((px, py))
+            
+            # Draw smooth curve for multiple points using Catmull-Rom spline
+            if len(pts_g) >= 2:
+                # Helper function for Catmull-Rom interpolation
+                def catmull_rom(p0, p1, p2, p3, t):
+                    return 0.5 * (
+                        2 * p1 +
+                        (-p0 + p2) * t +
+                        (2*p0 - 5*p1 + 4*p2 - p3) * t*t +
+                        (-p0 + 3*p1 - 3*p2 + p3) * t*t*t
+                    )
+                
+                # Build smooth curve with 20 steps per segment for silky rendering
+                smooth_pts = [pts_g[0]]
+                for i in range(1, len(pts_g)):
+                    p0 = pts_g[max(0, i - 2)]
+                    p1 = pts_g[i - 1]
+                    p2 = pts_g[i]
+                    p3 = pts_g[min(len(pts_g) - 1, i + 1)]
+                    steps = 20
+                    for t_step in range(1, steps + 1):
+                        t = t_step / steps
+                        x = int(catmull_rom(p0[0], p1[0], p2[0], p3[0], t))
+                        y = int(catmull_rom(p0[1], p1[1], p2[1], p3[1], t))
+                        # Clamp to graph area to prevent stray artefacts
+                        x = max(ga2.x, min(ga2.right, x))
+                        y = max(ga2.y, min(ga2.bottom, y))
+                        smooth_pts.append((x, y))
+                
+                # Draw gradient fill under curve (clipped to graph area) — green tint
+                if len(smooth_pts) >= 2:
+                    fill_pts = smooth_pts + [(ga2.right, ga2.bottom), (smooth_pts[0][0], ga2.bottom)]
+                    fill_surf = pygame.Surface((ga2.width, ga2.height), pygame.SRCALPHA)
+                    pygame.draw.polygon(fill_surf, (50, 200, 90, 30),
+                                        [(p[0] - ga2.x, p[1] - ga2.y) for p in fill_pts])
+                    screen.blit(fill_surf, (ga2.x, ga2.y))
+                
+                # Anti-aliased green curve: wide faint pass then sharp pass (no dots)
+                pygame.draw.lines(screen, (40, 180, 80), False, smooth_pts, 4)
+                pygame.draw.lines(screen, (50, 200, 90), False, smooth_pts, 2)
+
+            elif len(pts_g) == 1:
+                # Single point - draw it prominently
+                pt = pts_g[0]
+                pygame.draw.circle(screen, (50, 200, 90), pt, 6)
+                
+                # Draw horizontal reference line
+                pygame.draw.line(screen, (220, 220, 225), (ga2.x, pt[1]), (ga2.right, pt[1]), 1)
+            
+            # Draw axis labels with better positioning
+            min_lbl = self.parent.font_s.render(f"{mn}", True, (140, 140, 155))
+            max_lbl = self.parent.font_s.render(f"{mx}", True, (140, 140, 155))
+            screen.blit(min_lbl, (gr.x + 4, ga2.bottom - 12))
+            screen.blit(max_lbl, (gr.x + 4, ga2.y - 4))
+            
+            # Draw "Rating" label
+            rating_lbl = self.parent.font_s.render("Rating", True, (100, 100, 120))
+            screen.blit(rating_lbl, (gr.x + 4, gr.y + 4))
+            
+            # Interactive tooltip with improved hover detection
+            mx_m, my_m = pygame.mouse.get_pos()
+            show_tooltip = False
+            tooltip_idx = None
+            
+            if len(pts_g) == 1:
+                show_tooltip = True
+                tooltip_idx = 0
+            elif ga2.collidepoint(mx_m, my_m) and pts_g:
+                # Find closest point within hover radius
+                min_dist = float('inf')
+                hover_radius = 15
+                for i, pt in enumerate(pts_g):
+                    dist = ((pt[0] - mx_m)**2 + (pt[1] - my_m)**2)**0.5
+                    if dist < hover_radius and dist < min_dist:
+                        min_dist = dist
+                        tooltip_idx = i
+                        show_tooltip = True
+            
+            # --- FIX: Tooltip Rendering has been moved to the very bottom of the method! ---
+            
+        else:
+            # No data message
+            no_data = fm.render("No games imported yet", True, (150, 150, 160))
+            screen.blit(no_data, (gr.centerx - no_data.get_width() // 2, gr.centery - no_data.get_height() // 2))
+
+        # Sort bar
+        sy2=ty+gh+10
+        sx3=rx
+        for lbl_,sk_ in[("Date","date"),("Rating","rating"),("Result","result")]:
+            ia_=(self.sort_key==sk_)
+            sr_=pygame.Rect(sx3,sy2,88,26)
+            sc_=THEME["accent"] if ia_ else (218,218,228)
+            pygame.draw.rect(screen,sc_,sr_,border_radius=6)
+            sl_=self.parent.font_s.render(lbl_+(" ↑" if ia_ and self.sort_asc else " ↓" if ia_ else ""),
+                                           True,(255,255,255) if ia_ else (60,60,72))
+            screen.blit(sl_,(sr_.centerx-sl_.get_width()//2,sr_.centery-sl_.get_height()//2))
+            self.zones.append((sr_,"sort",sk_)); sx3+=94
+
+        # Game list - improved layout with proper text alignment
+        ly2=sy2+36; lh2=by-ly2-46
+        lstr=pygame.Rect(rx,ly2,rw,lh2)
+        pygame.draw.rect(screen,(255,255,255),lstr,border_radius=8)
+        pygame.draw.rect(screen,(210,210,220),lstr,1,border_radius=8)
+        
+        # Add header row for game list
+        header_y = ly2
+        header_h = 32
+        pygame.draw.rect(screen, (248, 248, 252), pygame.Rect(rx, header_y, rw, header_h), border_radius=8)
+        pygame.draw.line(screen, (220, 220, 228), (rx, header_y + header_h), (rx + rw, header_y + header_h), 1)
+        
+        # Header labels with proper alignment
+        h_opponent = self.parent.font_s.render("Opponent", True, (80, 80, 90))
+        h_result = self.parent.font_s.render("Result", True, (80, 80, 90))
+        h_rating = self.parent.font_s.render("Rating", True, (80, 80, 90))
+        h_change = self.parent.font_s.render("Change", True, (80, 80, 90))
+        h_date = self.parent.font_s.render("Date", True, (80, 80, 90))
+        
+        screen.blit(h_opponent, (rx + 15, header_y + 10))
+        screen.blit(h_result, (rx + 180, header_y + 10))
+        screen.blit(h_rating, (rx + 260, header_y + 10))
+        screen.blit(h_change, (rx + 340, header_y + 10))
+        screen.blit(h_date, (rx + 430, header_y + 10))
+        
+        # Adjust list rect to start after header
+        lstr2 = pygame.Rect(rx, ly2 + header_h, rw, lh2 - header_h)
+        screen.set_clip(lstr2)
+        pg_games=games[self.page*self.per_page:(self.page+1)*self.per_page]
+        gy2=lstr2.y+6; rh2=max(38,lh2//max(1,len(pg_games) if pg_games else 1))
+        
+        for gi_,g_ in enumerate(pg_games):
+            num_=self.page*self.per_page+gi_+1
+            grow_=pygame.Rect(lstr.x+8,gy2,lstr.width-16,rh2-4)
+            
+            # Alternating row background
+            bg3_=(240,244,250) if gi_%2==0 else (250,251,255)
+            if grow_.collidepoint(pygame.mouse.get_pos()):
+                bg3_=(225,235,248)
+            pygame.draw.rect(screen,bg3_,grow_,border_radius=5)
+            
+            # Opponent name (aligned with header)
+            opp_=g_.get("opponent","?")
+            if len(opp_) > 18:
+                opp_ = opp_[:15] + "..."
+            opp_txt = self.parent.font_s.render(opp_,True,(20,20,32))
+            screen.blit(opp_txt, (grow_.x+10, grow_.y + (rh2 - opp_txt.get_height())//2))
+            
+            # Result (aligned with header)
+            res_=g_.get("result","?")
+            rc3_=(38,158,38) if res_=="1-0" else (178,38,38) if res_=="0-1" else (118,118,128)
+            res_txt = self.parent.font_s.render(res_,True,rc3_)
+            screen.blit(res_txt, (rx + 180, grow_.y + (rh2 - res_txt.get_height())//2))
+            
+            # Rating (aligned with header)
+            rtr_=g_.get("rating","?")
+            rating_txt = self.parent.font_s.render(str(rtr_),True,(40,40,52))
+            screen.blit(rating_txt, (rx + 260, grow_.y + (rh2 - rating_txt.get_height())//2))
+            
+            # Rating change (aligned with header)
+            rch2_=g_.get("rating_change",0) or 0
+            rcs_=(f"+{rch2_}" if rch2_>0 else str(rch2_)) if isinstance(rch2_, int) else "0"
+            rcc_=(38,158,38) if rch2_>0 else (178,38,38) if rch2_<0 else (128,128,140)
+            change_txt = self.parent.font_s.render(rcs_,True,rcc_)
+            screen.blit(change_txt, (rx + 340, grow_.y + (rh2 - change_txt.get_height())//2))
+            
+            # Date (aligned with header)
+            date_val = str(g_.get("date",""))
+            date_txt = self.parent.font_s.render(date_val, True, (100,100,120))
+            screen.blit(date_txt, (rx + 430, grow_.y + (rh2 - date_txt.get_height())//2))
+            
+            # Load button (right-aligned)
+            lb2_=pygame.Rect(grow_.right-70,grow_.y+(rh2-28)//2,62,28)
+            lc3_=(48,138,208) if lb2_.collidepoint(pygame.mouse.get_pos()) else (68,148,228)
+            pygame.draw.rect(screen,lc3_,lb2_,border_radius=5)
+            lt3_=self.parent.font_s.render("Load",True,(255,255,255))
+            screen.blit(lt3_,(lb2_.centerx-lt3_.get_width()//2,lb2_.centery-lt3_.get_height()//2))
+            self.zones.append((lb2_,"load_game",g_))
+            
+            gy2+=rh2
+        screen.set_clip(None)
+
+        # Pagination
+        py2=by-38
+        self.btn_prev=pygame.Rect(rx,py2,78,28)
+        self.btn_next=pygame.Rect(rx+rw-78,py2,78,28)
+        for _btn_,_lbl_,_en_ in[(self.btn_prev,"< Prev",self.page>0),(self.btn_next,"Next >",self.page<tp-1)]:
+            _c_=(98,148,208) if _en_ else (198,198,210)
+            pygame.draw.rect(screen,_c_,_btn_,border_radius=6)
+            _t_=self.parent.font_s.render(_lbl_,True,(255,255,255) if _en_ else (158,158,170))
+            screen.blit(_t_,(_btn_.centerx-_t_.get_width()//2,_btn_.centery-_t_.get_height()//2))
+        pg_=self.parent.font_s.render(f"Page {self.page+1} / {tp}",True,(80,80,92))
+        screen.blit(pg_,(rx+rw//2-pg_.get_width()//2,py2+6))
+
+        # --- FIX: Draw the Hover Tooltip LAST so it stays on top of everything ---
+        if 'show_tooltip' in locals() and show_tooltip and tooltip_idx is not None and tooltip_idx < len(pts_g):
+            # Draw hover highlight (green dot, no white inner dot)
+            pygame.draw.circle(screen, (50, 200, 90), pts_g[tooltip_idx], 7)
+            pygame.draw.circle(screen, (255, 255, 255), pts_g[tooltip_idx], 3)
+            
+            # Draw vertical reference line
+            pygame.draw.line(screen, (200, 200, 210), 
+                           (pts_g[tooltip_idx][0], ga2.y), 
+                           (pts_g[tooltip_idx][0], ga2.bottom), 1)
+            
+            # Enhanced tooltip
+            gh_ = games[tooltip_idx]
+            rc_ = gh_.get("rating", "?")
+            rch_ = gh_.get("rating_change", 0) or 0
+            res_ = gh_.get("result", "*")
+            opp_ = gh_.get("opponent", "?")
+            if len(opp_) > 18:
+                opp_ = opp_[:15] + "..."
+            date_ = gh_.get("date", "")
+            
+            tooltip_lines = [
+                f"Rating: {rc_}",
+                f"Change: {'+'if rch_>0 else ''}{rch_}",
+                f"vs {opp_}",
+                f"Result: {res_}",
+                f"{date_}"
+            ]
+            
+            tw = 200
+            th = len(tooltip_lines) * 16 + 12
+            
+            # Smart tooltip positioning
+            tx = pts_g[tooltip_idx][0] + 15
+            if tx + tw > gr.right - 8:
+                tx = pts_g[tooltip_idx][0] - tw - 15
+            
+            tip_y = pts_g[tooltip_idx][1] - th - 10
+            if tip_y < gr.y + 8:
+                tip_y = pts_g[tooltip_idx][1] + 10
+            
+            # Tooltip background with shadow and orange border
+            shadow_rect = pygame.Rect(tx + 2, tip_y + 2, tw, th)
+            pygame.draw.rect(screen, (0, 0, 0, 30), shadow_rect, border_radius=6)
+            pygame.draw.rect(screen, (248, 248, 252), pygame.Rect(tx, tip_y, tw, th), border_radius=6)
+            pygame.draw.rect(screen, (230, 130, 30), pygame.Rect(tx, tip_y, tw, th), 2, border_radius=6)
+            
+            # Tooltip text with better spacing
+            for line_idx, line in enumerate(tooltip_lines):
+                if "Rating:" in line:
+                    col = (40, 40, 52)
+                elif "Change:" in line:
+                    col = (60, 140, 60) if rch_ > 0 else (160, 40, 40) if rch_ < 0 else (100, 100, 100)
+                elif "Result:" in line:
+                    col = (40, 40, 52)
+                else:
+                    col = (80, 80, 92)
+                
+                line_surf = self.parent.font_s.render(line, True, col)
+                screen.blit(line_surf, (tx + 10, tip_y + 6 + line_idx * 16))
+
+    def handle_click(self, pos):
+        if self.close_btn and self.close_btn.collidepoint(pos): self.active=False; return
+
+        # + Add Account button → open the AccountPopup importer on top
+        if getattr(self, 'btn_add_account', None) and self.btn_add_account.collidepoint(pos):
+            from account_popup import AccountPopup as AccountImportPopup
+            self.parent.add_account_popup = AccountImportPopup(self.parent)
+            self.parent.add_account_popup.active = True
+            return
+
+        if self.btn_prev and self.btn_prev.collidepoint(pos) and self.page>0: self.page-=1; return
+        if self.btn_next and self.btn_next.collidepoint(pos):
+            acc=self._get_account()
+            if acc:
+                tp=max(1,(len(self._games_for(acc))+self.per_page-1)//self.per_page)
+                if self.page<tp-1: self.page+=1
+            return
+        for r,action,data in self.zones:
+            if r.collidepoint(pos):
+                if action=="select_acc": self.selected_account=data; self.page=0
+                elif action=="delete_acc":
+                    # Delete the account
+                    self._delete_account(data)
+                    return
+                elif action=="sort":
+                    if self.sort_key==data: self.sort_asc=not self.sort_asc
+                    else: self.sort_key=data; self.sort_asc=False
+                    self.page=0
+                elif action=="load_game":
+                    pp=data.get("pgn_path")
+                    if pp and os.path.exists(pp):
+                        self.parent.smart_load_pgn(pp); self.active=False
+                return
+
+    def handle_scroll(self, e):
+        if e.type==pygame.MOUSEBUTTONDOWN:
+            if e.button==4: self.scroll_acc=max(0,self.scroll_acc-38)
+            elif e.button==5: self.scroll_acc+=38
+
 class BatchCalibrationPopup(BasePopup):
     def __init__(self, parent):
         super().__init__(parent, 900, 700)
@@ -3181,12 +5276,14 @@ class BatchCalibrationPopup(BasePopup):
         # Buttons
         self.btn_add = pygame.Rect(self.rect.right - 350, self.rect.y + 50, 140, 40)
         pygame.draw.rect(screen, (60, 160, 220), self.btn_add, border_radius=8)
-        screen.blit(fb.render("+ Add PGN", True, (255, 255, 255)), (self.btn_add.x + 25, self.btn_add.y + 10))
+        t = fb.render("+ Add PGN", True, (255, 255, 255))
+        screen.blit(t, (self.btn_add.centerx - t.get_width()//2, self.btn_add.centery - t.get_height()//2))
 
         self.btn_run = pygame.Rect(self.rect.right - 190, self.rect.y + 50, 160, 40)
         col_run = (100, 100, 100) if self.is_calibrating else (60, 180, 60)
         pygame.draw.rect(screen, col_run, self.btn_run, border_radius=8)
-        screen.blit(fb.render("Run Calibration", True, (255, 255, 255)), (self.btn_run.x + 15, self.btn_run.y + 10))
+        t = fb.render("Run Calibration", True, (255, 255, 255))
+        screen.blit(t, (self.btn_run.centerx - t.get_width()//2, self.btn_run.centery - t.get_height()//2))
 
         # Render File List & Inputs
         list_rect = pygame.Rect(self.rect.x + 20, self.rect.y + 110, self.rect.width - 40, self.rect.height - 130)
@@ -3359,7 +5456,7 @@ class BatchCalibrationPopup(BasePopup):
                         curr_cp = prev_cp # Fallback to prevent crash
                         best_move_before = None
                     
-                    # Parse like pro chess softwares's text tags (Support BOTH formats)
+                    # Parse like chess.coms's text tags (Support BOTH formats)
                     comment = node.comment
                     class_match = None
                     if comment:

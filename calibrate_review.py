@@ -1,5 +1,5 @@
 """
-Calibration helper for tuning classification thresholds against a reference (e.g., like pro chess softwares)
+Calibration helper for tuning classification thresholds against a reference (e.g., like chess.coms)
 
 Usage:
   python calibrate_review.py --history history.json --labels labels.txt [--apply]

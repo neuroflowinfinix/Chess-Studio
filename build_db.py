@@ -15,7 +15,6 @@ def build_explorer_database(pgn_path="assets/database/database.pgn", db_path="as
     
     conn = sqlite3.connect(db_path, isolation_level=None) 
     c = conn.cursor()
-    # Your settings have been left entirely untouched
     c.execute('PRAGMA synchronous = OFF')
     c.execute('PRAGMA journal_mode = MEMORY')
     c.execute('PRAGMA temp_store = MEMORY')
@@ -45,6 +44,7 @@ def build_explorer_database(pgn_path="assets/database/database.pgn", db_path="as
         if resume_byte > 0: f.seek(resume_byte)
             
         while True:
+            current_bytes = f.tell() 
             game = chess.pgn.read_game(f)
             if game is None: break
             
@@ -54,47 +54,45 @@ def build_explorer_database(pgn_path="assets/database/database.pgn", db_path="as
             w_elo = int(w_elo_str) if w_elo_str.isdigit() else 0
             b_elo = int(b_elo_str) if b_elo_str.isdigit() else 0
             
+            # THE FILTER HAS BEEN NUKED. We parse ALL games to guarantee data!
+            
             result = headers.get("Result", "*")
             w_win = 1 if result == "1-0" else 0
             draw = 1 if result == "1/2-1/2" else 0
             b_win = 1 if result == "0-1" else 0
             
-            # --- THE FIX: Wrap board logic to catch "invalid position" and illegal moves ---
-            try:
-                board = game.board()
+            board = game.board()
+            
+            # Deep Indexing: First 40 ply (20 full moves)
+            for i, move in enumerate(game.mainline_moves()):
+                if i > 40: break 
                 
-                # Deep Indexing: First 40 ply (20 full moves)
-                for i, move in enumerate(game.mainline_moves()):
-                    if i > 40: break 
-                    
-                    fen_key = " ".join(board.fen().split(" ")[:4])
-                    san_move = board.san(move)
-                    
-                    c.execute('''INSERT INTO position_stats (fen, move, white_wins, draws, black_wins) 
-                                 VALUES (?, ?, ?, ?, ?)
-                                 ON CONFLICT(fen, move) DO UPDATE SET 
-                                 white_wins=white_wins+?, draws=draws+?, black_wins=black_wins+?''', 
-                              (fen_key, san_move, w_win, draw, b_win, w_win, draw, b_win))
-                    
-                    if (w_elo >= 2200 and b_elo >= 2200) or (w_elo == 0 and b_elo == 0):
-                        try:
-                            c.execute('INSERT INTO top_games VALUES (?, ?, ?, ?, ?, ?, ?)',
-                                      (fen_key, headers.get("White","?"), headers.get("Black","?"), w_elo, b_elo, result, headers.get("Date","?")))
-                            positions_saved += 1
-                        except Exception: pass
-                    
-                        board.push(move)
-            except Exception:
-                # If the PGN data is corrupt, silently skip the rest of the game and move on
-                pass
+                fen_key = " ".join(board.fen().split(" ")[:4])
+                san_move = board.san(move)
+                
+                c.execute('''INSERT INTO position_stats (fen, move, white_wins, draws, black_wins) 
+                             VALUES (?, ?, ?, ?, ?)
+                             ON CONFLICT(fen, move) DO UPDATE SET 
+                             white_wins=white_wins+?, draws=draws+?, black_wins=black_wins+?''', 
+                          (fen_key, san_move, w_win, draw, b_win, w_win, draw, b_win))
+                
+                # --- BUG CRUSHED: Save the game to the UI INSIDE the loop for this specific FEN! ---
+                # We limit it to players > 2200 OR unrated games so the UI doesn't bloat.
+                if (w_elo >= 2200 and b_elo >= 2200) or (w_elo == 0 and b_elo == 0):
+                    try:
+                        c.execute('INSERT INTO top_games VALUES (?, ?, ?, ?, ?, ?, ?)',
+                                  (fen_key, headers.get("White","?"), headers.get("Black","?"), w_elo, b_elo, result, headers.get("Date","?")))
+                        positions_saved += 1
+                    except Exception: pass
+                
+                board.push(move)
                 
             games_processed += 1
             
             if games_processed % 500 == 0:
-                current_position = f.tell() # Capture position AFTER reading the game
-                progress = current_position / total_bytes
+                progress = current_bytes / total_bytes
                 elapsed_time = time.time() - start_time
-                progress_made = max(0.0001, (current_position - resume_byte) / max(1, (total_bytes - resume_byte)))
+                progress_made = max(0.0001, (current_bytes - resume_byte) / max(1, (total_bytes - resume_byte)))
                 eta_seconds = (elapsed_time / progress_made) - elapsed_time if progress_made > 0 else 0
                 
                 m, s = divmod(int(eta_seconds), 60)
@@ -109,8 +107,7 @@ def build_explorer_database(pgn_path="assets/database/database.pgn", db_path="as
                 sys.stdout.flush()
                 
                 if games_processed % 5000 == 0:
-                    # Save the byte offset of the NEXT game so you don't double-count on resume
-                    c.execute('REPLACE INTO build_state (id, last_byte) VALUES (1, ?)', (current_position,))
+                    c.execute('REPLACE INTO build_state (id, last_byte) VALUES (1, ?)', (current_bytes,))
                     c.execute('COMMIT')
                     c.execute('BEGIN TRANSACTION')
 

@@ -82,10 +82,15 @@ class GameLogic:
             valuable_targets = 0
             for sq in attacks:
                 target_piece = self.board.piece_at(sq)
-                # Count if it attacks an opponent's piece that is NOT a pawn
-                if target_piece and target_piece.color == opponent and target_piece.piece_type != chess.PAWN:
+                # Count attacked opponent pieces: exclude pawns, but king only counts
+                # if it's the sole check source (avoid double-tagging checked positions as forks)
+                if target_piece and target_piece.color == opponent:
+                    if target_piece.piece_type == chess.PAWN:
+                        continue
+                    if target_piece.piece_type == chess.KING and self.board.is_check():
+                        continue  # King already flagged as check above; don't double-count
                     valuable_targets += 1
-            
+
             if valuable_targets >= 2:
                 event = "fork"
                 
@@ -235,7 +240,12 @@ class GameLogic:
         hist_to_use = history if history is not None else self.history
         
         for h in hist_to_use:
-            node = node.add_variation(h["move"])
+            if not isinstance(h, dict): continue
+            
+            move = h.get("move")
+            if not move: continue
+            
+            node = node.add_variation(move)
             
             # Preserve Legacy NAGs if they exist
             if "nags" in h and h["nags"]:

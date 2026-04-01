@@ -16,7 +16,7 @@ class LichessCloudAPI:
         })
     
     def get_cloud_evaluation(self, fen: str, variant: str = "standard", 
-                           multiPv: int = 1, depth: int = 65) -> Optional[Dict]:
+                           multiPv: int = 2, depth: int = 65) -> Optional[Dict]:
         """
         Get evaluation from Lichess cloud database
         depth=65 is maximum supported by Lichess

@@ -16,6 +16,7 @@ THEME = {
     "text_dim": (100, 100, 100),
     "border": (200, 200, 200),
     "accent": (60, 100, 220),  # Royal Blue
+    "dark_mode": False,
     
     # Chat
     "chat_bg": (245, 247, 250),
@@ -210,8 +211,7 @@ class AssetLoader:
         keys = ["brilliant", "great", "best", "excellent", "good", "miss", "inaccuracy", "mistake", "blunder", "book",
                 "reset", "flip", "mode", "theme", "review", "save", "load", "hint", "undo", 
                 "icon_search", "analyze", "pgnpopup", "pgnload", "gm_icon", "pgnsave", "enginehint", "main",
-                "eval_book", "puzzles", "close_btn"]
-        
+                "eval_book", "puzzles", "close_btn", "lichess", "chess_com"]
         for k in keys:
             found = False
             for prefix in ["", "icon_", "eval_"]:
@@ -527,3 +527,43 @@ class AssetLoader:
             self.refresh_puzzles()
             return True
         except: return False
+
+    def save_lichess_puzzle(self, fen, name, solution_uci, rating):
+        """Save a Lichess puzzle to the unsolved directory with a JSON sidecar."""
+        import json
+        try:
+            target_fen = os.path.join(self.path_unsolved, "lichess_attraction.fen")
+            with open(target_fen, "a", encoding="utf-8") as f:
+                f.write(f"{fen};{name}\n")
+            sidecar_path = os.path.join(self.path_unsolved, "lichess_sidecar.json")
+            sidecar = {}
+            if os.path.exists(sidecar_path):
+                try:
+                    with open(sidecar_path, "r", encoding="utf-8") as sf:
+                        sidecar = json.load(sf)
+                except Exception:
+                    sidecar = {}
+            key = " ".join(fen.split()[:3])
+            sidecar[key] = {"rating": rating, "solution": solution_uci, "name": name}
+            with open(sidecar_path, "w", encoding="utf-8") as sf:
+                json.dump(sidecar, sf, indent=2)
+            return True
+        except Exception as e:
+            print(f"Lichess puzzle save error: {e}")
+            return False
+
+    def get_lichess_sidecar(self):
+        """Load rating/solution metadata for all saved Lichess puzzles."""
+        import json
+        path = os.path.join(self.path_unsolved, "lichess_sidecar.json")
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    def get_existing_lichess_fens(self):
+        """Return set of FEN keys already saved to avoid duplicates."""
+        return set(self.get_lichess_sidecar().keys())

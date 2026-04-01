@@ -17,12 +17,9 @@ import time
 import queue 
 import random
 import json
-import pyttsx3
-from analysis_engine import HybridTablebase
 import re
 import tkinter as tk
 from tkinter import filedialog, messagebox
-import asyncio
 from database_explorer import OpeningExplorer, ExplorerUI
 # --- FIX: Prevent Stockfish 18 "Illegal Ponder Move" Crashes ---
 # python-chess strictly validates ponder moves. Stockfish 18 sometimes sends 
@@ -42,14 +39,13 @@ chess.Board.parse_uci = _safe_parse_uci
 # Custom Modules
 try: import bot_personalities
 except ImportError: bot_personalities = None
-try: import analysis_engine
-except ImportError: analysis_engine = None
+import analysis_engine
 try: import game_logic
 except ImportError: game_logic = None
 from assets import AssetLoader, SoundManager, BOTS, THEME, BOT_VOICE_MAP, PIECE_VALS
 from popups import (PGNSavePopup, AnalyzePromptPopup, BotPopup, PGNSelectionPopup, GMPopup, PromotionPopup, 
                    ReviewPopup, SideSelectionPopup, ProfilePopup, SettingsPopup, EnginePopup, 
-                   PhaseStatsPopup, PuzzlePopup, SaveBrilliantPopup, TrainerCompletePopup, ButtonsPopup, FastImportLoadingPopup)
+                   PhaseStatsPopup, PuzzlePopup, SaveMatePopup, TrainerCompletePopup, ButtonsPopup, FastImportLoadingPopup)
 from ui_renderer import UIRenderer
 class TrainerPopup:
     def __init__(self, app):
@@ -320,8 +316,11 @@ class ChessApp:
         self.root = tk.Tk(); self.root.withdraw()
         
         self.running = True
-        self.width, self.height = 1500, 950 
-        self.screen = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
+        # Initialize in fullscreen mode using the monitor's native resolution
+        self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN | pygame.DOUBLEBUF | pygame.HWSURFACE, vsync=1)
+        self.width, self.height = self.screen.get_size()
+        self.is_fullscreen = True  # <-- FIX: Attached to self instead of self.screen
+        self.logical_width, self.logical_height = 1400, 1000
         pygame.display.set_caption("Chess Studio Pro")
         try: pygame.display.set_icon(pygame.image.load("assets/icons/main.png"))
         except: pass
@@ -361,6 +360,12 @@ class ChessApp:
         self.mode_idx = 1
         self.current_engine_info = {"name": "Stockfish Default", "path": ""}
         
+        if not self.current_engine_info.get("path") and hasattr(self, "assets") and self.assets.engines:
+            default = self.assets.engines[0]
+            self.current_engine_info["name"] = default["name"]
+            self.current_engine_info["path"] = default["path"]
+            print(f"[Engine Auto-Select] Using {default['name']} @ {default['path']}")
+        
         # Input/UI State
         self.selected = None
         self.valid_moves = []
@@ -374,22 +379,40 @@ class ChessApp:
         # Engine Fail-Safe
         self.engine_crash_count = 0
         
+        # Performance optimization state
+        self.dirty_rects = []
+        self.static_board_surface = None
+        self.static_pieces_surface = None
+        self.last_board_state = None
+        self.animation_active = False
+        self.target_fps = 144
+        self.static_fps = 30
+        self.needs_full_redraw = True
+        
         # Animation/Drag/RightClick
         self.dragging_piece = None
-        self.drag_pos = (0, 0)
+        self.drag_pos_frect = pygame.FRect(0, 0, 0, 0)
         self.threat_arrow = None
         self.right_click_start = None
-        # New: Dragging temp arrow
         self.temp_arrow_start = None
         self.temp_arrow_end = None
-        
+
+        # Pre-move system
+        self.pre_move = None            # (from_sq, to_sq) queued while bot thinks
+        self.pre_move_promotion = None
+        self.pre_move_queue = []        # List of (from_sq, to_sq, promo) for chained premoves
+
+        # Move time tracking
+        self._last_move_time = None
+        self._last_move_time_delta = 0.0
+
         # Popups
         self.active_popup = None
         self.review_popup = None; self.bot_popup = None; self.promo_popup = None
         self.side_popup = None; self.pgn_popup = None; self.gm_move_popup = None
         self.save_popup = None; self.settings_popup = None; self.trainer_popup = None
         self.engine_popup = None; self.phase_popup = None; self.puzzle_popup = None
-        self.save_brilliant_popup = None
+        self.save_mate_popup = None
         self.trainer_complete_popup = None
         self.fast_import_popup = None
         self.unsaved_popup = None
@@ -398,6 +421,8 @@ class ChessApp:
         
         # Enhanced features initialization
         self.account_popup = None
+        self.add_account_popup = None
+        self.complexity_popup = None
         self.chat_messages = []
         self.current_depth = 0
         self.max_depth = 20
@@ -416,8 +441,6 @@ class ChessApp:
         self.assets = AssetLoader()
         self.load_config()
         self.renderer = UIRenderer(self)
-        self.tablebase = HybridTablebase()
-        self.tb_data = None
         
         # --- ADDED: Grandmaster Database Explorer ---
         self.explorer_db = OpeningExplorer("assets/database/explorer.sqlite")
@@ -484,6 +507,7 @@ class ChessApp:
         self.calc_layout()
         self.sound_manager.play("game_start")
         self.side_popup = SideSelectionPopup(self, BOTS[0])
+        self.side_popup.active = True
     def load_config(self):
         try:
             with open("settings.json", "r") as f:
@@ -495,6 +519,14 @@ class ChessApp:
             
         # Initialize Player Elo safely right as the app starts
         self.player_elo = self.settings.get("player_elo", 400)
+
+        # Restore dark theme if it was previously enabled
+        if self.settings.get("dark_theme", False):
+            THEME["bg"]       = (28, 28, 32)
+            THEME["panel"]    = (38, 38, 44)
+            THEME["text"]     = (220, 220, 225)
+            THEME["text_dim"] = (140, 140, 150)
+            THEME["border"]   = (60, 60, 70)
         
         # --- FIX: Restore Engine Configurations from settings.json ---
         self.max_depth = self.settings.get("engine_depth", 20)
@@ -586,11 +618,11 @@ class ChessApp:
                             self.logic.history = [dict(hi) for hi in h]
                             self.logic.view_ply = self.view_ply
                         if bf:
-                            from popups import SaveBrilliantPopup
-                            self.save_brilliant_popup = SaveBrilliantPopup(self, bf)
-                            self.save_brilliant_popup.active = True
+                            from popups import SaveMatePopup
+                            self.save_mate_popup = SaveMatePopup(self, bf)
+                            self.save_mate_popup.active = True
                             
-                        self.unsaved_analysis = True 
+                        self.unsaved_analysis = True
                     self.status_msg = "Fast Import Complete"
                     self.sound_manager.play("game_start")
             except Exception as e:
@@ -842,39 +874,32 @@ class ChessApp:
             self.black_opening = b_book if b_in_book else f"{b_book} *"
     # --- THREADS ---
     def tts_worker(self):
-        """Plays TTS natively and offline using pyttsx3 with dynamic accents."""
+        """Plays pre-generated Edge-TTS .mp3 files smoothly."""
+        import json
+        import os
         import time
         import queue
-        try:
-            import pyttsx3
-        except ImportError:
-            print("[AUDIO THREAD] pyttsx3 not installed. Please run: pip install pyttsx3")
-            return
-
-        print("\n[AUDIO THREAD] Starting local pyttsx3 engine loop...")
-
-        # ---------------------------------------------------------
-        #  THE BOT PERSONA MATRIX (Speed-Adjusted)
-        #  Maps bot names to their specific voice index and speed
-        # ---------------------------------------------------------
-        bot_personas = {
-            "Spark":    {"index": 11, "rate": 160},  # Mark (US) - Energetic but clear
-            "Cassidy":  {"index": 2,  "rate": 140},  # Linda (CA) - Safe, friendly female
-            "Byte":     {"index": 1,  "rate": 150},  # James (AU) - Confident, upbeat Australian
-            "Vincent":  {"index": 0,  "rate": 125},  # David (US) - Very slow, hesitant learner
-            "Oliver":   {"index": 10, "rate": 140},  # David (US) - Standard, balanced
-            "Arthur":   {"index": 7,  "rate": 155},  # Sean (IE) - Aggressive, punchy Irish
-            "Niles":    {"index": 4,  "rate": 155},  # George (UK) - Fast, aggressive British
-            "Nova":     {"index": 5,  "rate": 135},  # Hazel (UK) - Calm, passive
-            "Eleanor":  {"index": 6,  "rate": 125},  # Susan (UK) - Very measured, slow defender
-            "Armando":  {"index": 3,  "rate": 145},  # Richard (CA) - Sharp, tactical
-            "Veda":     {"index": 8,  "rate": 135},  # Heera (IN) - Calculating Indian female
-            "Catherine":{"index": 14, "rate": 140},  # Catherine (AU) - Crisp Australian historian
-            "Maximus":  {"index": 9,  "rate": 130},  # Ravi (IN) - Deep, authoritative Grandmaster
-            "Stockfish":{"index": 12, "rate": 165},  # Zira (US) - Brisk, robotic female
-            "Checkmate Master": {"index": 4, "rate": 160} # George (UK) - Intense assassin
-        }
-
+        import pygame
+        import bot_personalities
+        
+        print("\n[AUDIO THREAD] Starting up...")
+        
+        # 1. WAIT for the main game to turn on the Pygame Mixer!
+        while not pygame.mixer.get_init():
+            time.sleep(0.5)
+            
+        print("[AUDIO THREAD] Pygame Mixer connected!")
+        
+        # 2. Load the Voice Map Ledger
+        voice_map = {}
+        map_path = os.path.join("assets", "voices", "voice_map.json")
+        if os.path.exists(map_path):
+            try:
+                with open(map_path, "r", encoding="utf-8") as f:
+                    voice_map = json.load(f)
+                print(f"[AUDIO THREAD] Loaded {len(voice_map)} personas from JSON.")
+            except Exception as e:
+                print(f"[AUDIO ERROR] Error loading voice map: {e}")
         while getattr(self, 'running', True):
             try:
                 try: 
@@ -882,37 +907,46 @@ class ChessApp:
                 except queue.Empty: 
                     continue
                 
-                print(f"\n[AUDIO THREAD] Speaking line: {text[:40]}...")
+                # --- IT CAUGHT THE TEXT! ---
+                print(f"\n[AUDIO THREAD] Caught line from queue: {text[:30]}...")
                 
-                # --- THE FIX: INITIALIZE INSIDE THE LOOP ---
-                tts_engine = pyttsx3.init()
-                voices = tts_engine.getProperty('voices')
-                total_voices = len(voices)
+                # 3. Figure out which persona is speaking
+                persona = "GM"
+                from assets import BOTS
+                for b in BOTS:
+                    if b.get("name") == bot_name:
+                        persona = bot_personalities._ENGINE.get_style_category(b.get("style", "GM"))
+                        break
                 
-                # Fetch persona (Default to David US if bot isn't found)
-                persona = bot_personas.get(bot_name, {"index": 0, "rate": 150})
+                # 4. Look up the specific audio file
+                bot_dictionary = voice_map.get(persona, {})
+                filename = bot_dictionary.get(text)
                 
-                # SAFETY CHECK: If someone clones your GitHub repo and only has 3 voices,
-                # this prevents the app from crashing by wrapping the index back to 0.
-                safe_index = persona["index"] if persona["index"] < total_voices else (persona["index"] % max(1, total_voices))
-                
-                # Apply the specific voice and speed
-                try:
-                    tts_engine.setProperty('voice', voices[safe_index].id)
-                    tts_engine.setProperty('rate', persona["rate"])
-                except Exception:
-                    pass # Fallback to system default if property fails
-                
-                # Speak!
-                tts_engine.say(text)
-                tts_engine.runAndWait()
-                
-                # --- THE FIX: DESTROY ENGINE AFTER SPEAKING ---
-                del tts_engine
-                
+                if filename:
+                    filepath = os.path.join("assets", "voices", filename)
+                    if os.path.exists(filepath):
+                        try:
+                            # Load directly as a Sound — do NOT also call music.load(),
+                            # which locks the file on Windows and wastes the music stream.
+                            voice_sound = pygame.mixer.Sound(filepath)
+                            voice_sound.set_volume(0.40)
+
+                            # Use Channel 7 to guarantee it never cuts off board SFX
+                            voice_channel = pygame.mixer.Channel(7)
+                            voice_channel.play(voice_sound)
+                            print(f"[AUDIO THREAD] Playing on Channel 7: {filename}")
+                            
+                            while voice_channel.get_busy() and getattr(self, 'running', True):
+                                pygame.time.wait(100)
+                                
+                        except Exception as e:
+                            print(f"[AUDIO ERROR] Playback Error: {e}")
+                    else:
+                        print(f"[AUDIO ERROR] File missing from folder: {filepath}")
+                else:
+                    print(f"[AUDIO MISSING] Not found in JSON -> {persona}: '{text[:30]}...'")
             except Exception as e:
                 print(f"[AUDIO ERROR] Loop crashed: {e}")
-                time.sleep(1)
     
     def start_ranked_match(self):
         """Finds a bot near the player's Elo and starts a ranked match."""
@@ -1029,8 +1063,14 @@ class ChessApp:
                                 print(f"MultiPV error: {e}")
                         # -----------------------------------------------
                         with self.lock:
-                            self.eval_val = cp if self.playing_white else -cp
-                            self.real_time_score = txt
+                            # --- FIX: Force +0.0 if no moves have been made ---
+                            if self.board.ply() == 0:
+                                self.eval_val = 0.0
+                                self.real_time_score = "+0.0"
+                            else:
+                                self.eval_val = cp if self.playing_white else -cp
+                                self.real_time_score = txt
+                                
                             self.arrows = multi_arrows if multi_arrows else arr
                             self.threat_arrow = current_threat 
                             self.mate_lines_san = mate_lines_san # Expose to UI renderer
@@ -1375,7 +1415,7 @@ class ChessApp:
                          self.promo_popup = PromotionPopup(self, self.board.turn, move.from_square, move.to_square)
                          return
                 # 4. Puzzle Logic Check
-                if self.mode == "puzzle" and self.board.turn == self.playing_white:
+                if self.mode == "puzzle" and (self.board.turn == chess.WHITE) == self.playing_white:
                     is_good, best_move = self.validate_puzzle_move(move)
                     
                     if not is_good:
@@ -1403,6 +1443,14 @@ class ChessApp:
                 is_capture = self.board.is_capture(move)
                 is_ep = self.board.is_en_passant(move)
                 is_castle = self.board.is_castling(move)
+
+                # Move time tracking
+                _now = time.time()
+                if self._last_move_time is not None:
+                    self._last_move_time_delta = round(_now - self._last_move_time, 2)
+                else:
+                    self._last_move_time_delta = 0.0
+                self._last_move_time = _now
                 
                 # =================================================================
                 # --- NEW TACTICAL VISION EVENT GENERATOR & CENTRALIZED CHAT ---
@@ -1468,31 +1516,27 @@ class ChessApp:
                     except Exception as e:
                         print(f"[TACTICAL ERROR] {e}")
                 # =================================================================
-                if self.logic: 
+                if self.logic:
                     self.logic.apply_move(move)
-                    self.board = self.logic.board # <-- FIX: Forces UI board to sync with Logic board
-                else: 
+                    self.board = self.logic.board  # Sync UI board with Logic board
+                    # Sync main.py history from logic (avoids double-append)
+                    if self.logic.history and len(self.logic.history) > len(self.history):
+                        entry = dict(self.logic.history[-1])
+                        entry["ply"] = self.board.ply()
+                        entry["move_time"] = self._last_move_time_delta
+                        self.history.append(entry)
+                else:
+                    try: san = board_before.san(move)
+                    except: san = str(move)
                     self.board.push(move)
-                
-                try: san = board_before.san(move)
-                except: san = str(move)
-                self.history.append({
-                    "move": move, 
-                    "san": san, 
-                    "fen": self.board.fen(),
-                    "ply": self.board.ply()  # FIX: Crucial for accurate Review Stats!
-                })
+                    self.history.append({
+                        "move": move,
+                        "san": san,
+                        "fen": self.board.fen(),
+                        "ply": self.board.ply()
+                    })
                 self.view_ply = self.board.ply()
                 
-                # --- NEW: Check Tablebase if 7 or fewer pieces remain ---
-                if len(self.board.piece_map()) <= 7:
-                    threading.Thread(
-                        target=lambda: setattr(self, 'tb_data', self.tablebase.get_evaluation(self.board)), 
-                        daemon=True
-                    ).start()
-                else:
-                    self.tb_data = None
-                    
                 # Clear UI artifacts on successful move
                 self.user_arrows = []
                 self.temp_arrow_start = None 
@@ -1535,17 +1579,60 @@ class ChessApp:
                 if not is_bot_turn:
                     self.trainer_hint_arrow = self.trainer_moves[self.trainer_idx]
                     
+        # Fire pre-move queue if it is now the human's turn
+        if not getattr(self, 'pre_move_queue', None):
+            self.pre_move_queue = []
+        # Migrate legacy single premove into the queue if present
+        if getattr(self, 'pre_move', None) is not None:
+            self.pre_move_queue.insert(0, (self.pre_move[0], self.pre_move[1], self.pre_move_promotion))
+            self.pre_move = None
+            self.pre_move_promotion = None
+        if self.pre_move_queue:
+            # Cancel entire queue if in check — player must resolve manually
+            if self.board.is_check():
+                self.pre_move_queue.clear()
+            else:
+                pm_from, pm_to, pm_prom = self.pre_move_queue.pop(0)
+                pm_move = chess.Move(pm_from, pm_to, promotion=pm_prom)
+                is_our_turn = (self.board.turn == chess.WHITE) == self.playing_white
+                if is_our_turn and not self.board.is_game_over():
+                    if pm_move in self.board.legal_moves:
+                        self.apply_move(pm_move)
+                        return  # apply_move handles update_opening_label itself
+                    else:
+                        # Illegal premove — cancel the rest of the chain
+                        self.pre_move_queue.clear()
+
         self.update_opening_label()
     
     def validate_puzzle_move(self, move):
         if not self.analyzer or not self.analyzer.is_active: return True, None
         try:
-            cp, txt, arrows = self.analyzer.analyze_live(self.board)
-            if not arrows: return True, None
-            best_move = arrows[0][0]
-            if move == best_move: return True, best_move
-            return False, best_move
-        except: return True, None
+            # Use MultiPV to find ALL valid mate lines so the user isn't punished for alternative mates
+            limit = chess.engine.Limit(time=0.2)
+            info = self.analyzer.engine.analyse(self.board, limit, multipv=5)
+            
+            valid_moves = []
+            best_move = None
+            
+            for line in info:
+                if "pv" in line and len(line["pv"]) > 0 and "score" in line:
+                    score = line["score"].pov(self.board.turn)
+                    if score.is_mate() and score.mate() > 0:
+                        valid_moves.append(line["pv"][0])
+                        if not best_move: best_move = line["pv"][0]
+            
+            # Fallback if no mate lines are found (e.g. puzzle isn't a forced mate)
+            if not valid_moves and info and "pv" in info[0] and len(info[0]["pv"]) > 0:
+                best_move = info[0]["pv"][0]
+                valid_moves.append(best_move)
+            
+            if move in valid_moves:
+                return True, best_move
+            return False, best_move or move
+        except Exception as e:
+            print(f"Puzzle validation error: {e}")
+            return True, None
         
     def check_puzzle_status(self):
         if self.board.is_checkmate():
@@ -1870,7 +1957,7 @@ class ChessApp:
             with self.lock: 
                 self.last_move_analysis = {"sq": move.to_square, "class": classification, "time": time.time()}
                 
-                if self.history and self.history[-1]["move"] == move:
+                if self.history and isinstance(self.history[-1], dict) and self.history[-1].get("move") == move:
                     self.history[-1]["review"] = {
                         "class": classification,
                         "eval_str": curr_eval_txt if classification != "book" else "", # <-- FIXED
@@ -2008,13 +2095,34 @@ class ChessApp:
                 self.status_msg = f"Puzzle: {turn_str}"
                 self.add_chat("System", f"Loaded: {puzzle['name']}")
                 
-                # --- NEW: Message with Chances ---
-                self.add_chat("Trainer", f"{turn_str}! (3 chances left)") 
+                # --- NEW: Bot Challenge for Checkmates ---
+                p_name = puzzle["name"].lower()
+                if "mate in 1" in p_name:
+                    bot_msg = "Checkmate me in 1 move !!"
+                elif "mate in 2" in p_name:
+                    bot_msg = "Checkmate me in 2 moves !!"
+                else:
+                    bot_msg = f"{turn_str}! (3 chances left)"
+                    
+                self.add_chat("Bot", bot_msg)
+                if hasattr(self, 'speech_queue'):
+                    self.speech_queue.put((bot_msg, "Bot"))
                 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load puzzle: {e}")
     def trigger_auto_analysis(self, game):
-        self.board.reset(); self.history = []; self.view_ply = 0; self.pgn_headers = dict(game.headers)
+        self.board.reset()
+        # --- FIX: Honour the PGN's starting FEN (Chess960, custom positions, chess.com variants) ---
+        # chess.com "complete games" exports include Chess960 and From-Position games with a [FEN]
+        # header. Without this, moves are pushed onto the wrong starting position, corrupting both
+        # the board state AND the ply-parity used to assign clocks to the correct player.
+        setup_fen = game.headers.get("FEN")
+        if setup_fen:
+            try:
+                self.board.set_fen(setup_fen)
+            except Exception:
+                self.board.reset()  # Fallback silently if FEN is malformed
+        self.history = []; self.view_ply = 0; self.pgn_headers = dict(game.headers)
         self.cached_review = None
         try:
              if "Engine" in game.headers: self.logic.pgn_metadata["Engine"] = game.headers["Engine"]
@@ -2024,6 +2132,11 @@ class ChessApp:
         
         for node in game.mainline():
             move = node.move
+            # --- FIX: Capture turn BEFORE push so we know who just moved ---
+            # This is the only reliable way to assign clocks to the correct player.
+            # node.ply() % 2 is fragile: it breaks for games that start from a FEN
+            # where Black moves first, or any position with a non-zero initial ply.
+            turn_before_move = self.board.turn  # chess.WHITE=True, chess.BLACK=False
             san = self.board.san(move)
             self.board.push(move)
             if self.logic: self.logic.apply_move(move)
@@ -2093,12 +2206,20 @@ class ChessApp:
                 
             if curr_eval_cp is not None:
                 prev_eval_cp = curr_eval_cp
+            # node.ply() is the ply of the resulting position (1-based, odd=White moved).
+            # We use board.ply() AFTER push because self.board has already been pushed above.
+            # --- FIX: Parse clock robustly. chess.com complete games sometimes embeds
+            # the %clk annotation without spaces: {[%clk 0:09:55]} — python-chess handles
+            # this, but we also guard against any unexpected None return. ---
+            raw_clock = node.clock()  # Returns remaining seconds as float, or None
+
             step = {
                 "move": move, 
                 "san": san, 
                 "fen": self.board.fen(), 
-                "ply": node.ply(),
-                "clock": node.clock(), 
+                "ply": self.board.ply(),  # board.ply() after push — always correct regardless of FEN offset
+                "color": "white" if turn_before_move == chess.WHITE else "black",  # Explicit: no parity guessing
+                "clock": raw_clock,
                 "review": review_data
             }
             if node.nags:
@@ -2118,23 +2239,45 @@ class ChessApp:
         self.logic.pgn_metadata["Engine"] = engine_name
     # --- UI HANDLING ---
     def handle_click(self, pos, event_type="down"):
-        for popup in [self.side_popup, self.save_popup, self.promo_popup, self.pgn_popup, 
-                      self.gm_move_popup, self.bot_popup, self.review_popup, self.active_popup, 
-                      self.settings_popup, self.trainer_popup, self.engine_popup, 
-                      self.phase_popup, self.profile_popup, self.puzzle_popup, self.save_brilliant_popup,
-                      self.trainer_complete_popup, self.account_popup]: # <-- ADDED account_popup
+        # complexity_popup is a non-modal overlay — handle its clicks only when
+        # the click lands inside its rect, then fall through so board moves still work.
+        cp = getattr(self, 'complexity_popup', None)
+        if cp and cp.active and cp.rect.collidepoint(pos):
+            if event_type == "down":
+                cp.handle_click(pos)
+            return
+
+        for popup in [self.review_popup, self.pgn_popup, self.gm_move_popup, self.bot_popup,
+                              self.promo_popup, self.save_popup, self.side_popup, self.settings_popup,
+                              self.trainer_popup, self.engine_popup, self.phase_popup, self.puzzle_popup,
+                              getattr(self, 'save_mate_popup', None), getattr(self, 'save_brilliant_popup', None),
+                              self.profile_popup, self.active_popup, self.trainer_complete_popup,
+                              self.fast_import_popup, self.unsaved_popup, self.account_popup,
+                              getattr(self, 'add_account_popup', None)]:
             if popup and popup.active:
-                if hasattr(popup, 'handle_scroll') and event_type == "down": 
-                    popup.handle_scroll(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)) 
-                if event_type == "down" and pygame.mouse.get_pressed()[0]: 
+                # Scroll is handled by the main event loop via MOUSEWHEEL/button 4-5.
+                # Do not fire a fake scroll event here — it does nothing and wastes cycles.
+                if event_type == "down":
                     popup.handle_click(pos)
                 elif hasattr(popup, 'handle_input') and event_type == "down":
                     pass 
                 return
         for r, ply in self.move_click_zones:
             if r.collidepoint(pos):
-                self.view_ply = ply; self.selected = None; self.valid_moves = []; self.arrows = []; self.update_opening_label(); return
-        if self.view_ply != self.board.ply(): return
+                is_zero_based = (len(self.move_click_zones) > 0 and self.move_click_zones[0][1] == 0)
+                self.view_ply = ply + 1 if is_zero_based else ply
+                self.selected = None
+                self.valid_moves = []
+                self.arrows = []
+                self.user_arrows = []
+                self.threat_arrow = None
+                if hasattr(self, 'last_move_analysis'): 
+                    self.last_move_analysis = None
+                self.update_opening_label()
+                return
+        if self.view_ply != self.board.ply():
+            self.dragging_piece = None  # cancel ghost drag when reviewing past positions
+            return
         x, y = pos
         
         # Board Check
@@ -2167,11 +2310,62 @@ class ChessApp:
                 return
             # LEFT CLICK (MOVE)
             if event_type == "down":
-                # --- NEW: Instantly clear all arrows on left click! ---
                 self.user_arrows = []
                 self.temp_arrow_start = None
                 self.temp_arrow_end = None
-                
+
+                player_color = chess.WHITE if self.playing_white else chess.BLACK
+                _is_bot_turn = (
+                    self.mode == "play"
+                    and self.active_bot is not None
+                    and ((self.board.turn == chess.WHITE) != self.playing_white)
+                )
+
+                # Cancel pre-move if user clicks an empty square or enemy piece
+                if getattr(self, 'pre_move_queue', None):
+                    p_clicked = self.board.piece_at(sq)
+                    if not (p_clicked and p_clicked.color == player_color):
+                        self.pre_move_queue.clear()
+                        self.pre_move = None
+                        self.pre_move_promotion = None
+
+                # --- PRE-MOVE VIA CLICK (bot's turn) ---
+                if _is_bot_turn:
+                    p_clicked = self.board.piece_at(sq)
+                    if self.selected is not None and sq != self.selected:
+                        # Second click: queue the premove if destination is not own piece
+                        dest_piece = self.board.piece_at(sq)
+                        if dest_piece and dest_piece.color == player_color:
+                            # Clicked another own piece — re-select it
+                            self.selected = sq
+                            self.dragging_piece = (dest_piece, sq)
+                            self.drag_pos = pos
+                            # Show premove candidate dots using a temp board for the player
+                            _tmp = self.board.copy()
+                            _tmp.turn = player_color
+                            self.valid_moves = [m for m in _tmp.legal_moves if m.from_square == sq]
+                        else:
+                            # Queue as premove
+                            if not hasattr(self, 'pre_move_queue'): self.pre_move_queue = []
+                            self.pre_move_queue.append((self.selected, sq, None))
+                            self.pre_move = None  # legacy field stays clear
+                            self.pre_move_promotion = None
+                            self.sound_manager.play("click")
+                            self.selected = None; self.valid_moves = []
+                        return
+                    if p_clicked and p_clicked.color == player_color:
+                        # First click — select own piece for premove
+                        self.selected = sq
+                        self.dragging_piece = (p_clicked, sq)
+                        self.drag_pos = pos
+                        _tmp = self.board.copy()
+                        _tmp.turn = player_color
+                        self.valid_moves = [m for m in _tmp.legal_moves if m.from_square == sq]
+                    else:
+                        self.selected = None; self.valid_moves = []
+                    return
+
+                # --- NORMAL TURN: click-to-move ---
                 if self.selected is not None and sq != self.selected:
                     move = chess.Move(self.selected, sq)
                     is_legal_basic = move in self.board.legal_moves
@@ -2196,22 +2390,58 @@ class ChessApp:
             elif event_type == "up":
                 if self.dragging_piece:
                     from_sq = self.dragging_piece[1]
+
                     if from_sq != sq:
                         move = chess.Move(from_sq, sq)
-                        if move in self.board.legal_moves:
-                            self.apply_move(move)
-                        else:
-                             move_q = chess.Move(from_sq, sq, promotion=chess.QUEEN)
-                             if move_q in self.board.legal_moves:
-                                 self.promo_popup = PromotionPopup(self, self.board.turn, from_sq, sq)
+                        _is_bot_turn = (
+                            self.mode == "play"
+                            and self.active_bot is not None
+                            and ((self.board.turn == chess.WHITE) != self.playing_white)
+                        )
+                        try:
+                            if move in self.board.legal_moves:
+                                self.apply_move(move)
+                                self.dragging_piece = None
+                                self.selected = None
+                                self.valid_moves = []
+                                return
+                            elif _is_bot_turn:
+                                # Queue as pre-move — verify piece belongs to player
+                                p_at = self.board.piece_at(from_sq)
+                                player_color = chess.WHITE if self.playing_white else chess.BLACK
+                                if p_at and p_at.color == player_color:
+                                    if not hasattr(self, 'pre_move_queue'): self.pre_move_queue = []
+                                    self.pre_move_queue.append((from_sq, sq, None))
+                                    self.pre_move = None  # legacy field stays clear
+                                    self.pre_move_promotion = None
+                                    self.sound_manager.play("click")
+                            else:
+                                move_q = chess.Move(from_sq, sq, promotion=chess.QUEEN)
+                                if move_q in self.board.legal_moves:
+                                    self.promo_popup = PromotionPopup(self, self.board.turn, from_sq, sq)
+                        except Exception as e:
+                            print("Drag Move Error:", e)
+                    else:
+                        # Dropped on own square — keep selected for click-to-move
+                        self.dragging_piece = None
+                        return
+
                     self.dragging_piece = None
+                    self.selected = None
+                    self.valid_moves = []
         else:
-            if event_type == "down": 
-                self.selected = None; self.valid_moves = []
-                # Clear arrows if clicking in the blank space outside the board
-                self.user_arrows = [] 
+            if event_type == "down":
+                self.selected = None
+                self.valid_moves = []
+                self.user_arrows = []
                 self.temp_arrow_start = None
                 self.temp_arrow_end = None
+                # Cancel pre-move when clicking outside the board
+                self.pre_move = None
+                self.pre_move_promotion = None
+                self.pre_move_queue = []
+            elif event_type == "up":
+                self.dragging_piece = None
             
     def reset_game(self):
         with self.lock: 
@@ -2276,11 +2506,6 @@ class ChessApp:
                                  self.board.pop()
                              self.history.pop()
                     self.view_ply = len(self.history)
-        elif tag == "account":
-            # Open account manager popup
-            from account_popup import AccountPopup
-            self.account_popup = AccountPopup(self)
-            self.account_popup.active = True
         elif tag == "bot": self.bot_popup = BotPopup(self)
         elif tag == "flip": self.playing_white = not self.playing_white
         elif tag == "mode":
@@ -2306,8 +2531,52 @@ class ChessApp:
             if not headers and self.mode_idx == 1 and getattr(self, 'active_bot', None):
                 headers["White"] = "Player" if self.playing_white else self.active_bot["name"]
                 headers["Black"] = self.active_bot["name"] if self.playing_white else "Player"
-            self.review_popup = ReviewPopup(self, self.history, self.current_engine_info["path"], self.assets, headers, self.cached_review)
-            # --------------------------------------------------------------
+
+            # =================================================================
+            # FINAL SAFE FIX: Force-create analyzer + run full on-demand review
+            # Protects against 'str' objects in self.history
+            # =================================================================
+
+            # 1. Create the AnalysisEngine if missing or inactive
+            if not hasattr(self, 'analyzer') or self.analyzer is None or not getattr(self.analyzer, 'is_active', False):
+                print("[Review] Analyzer missing or inactive → creating now...")
+
+                if hasattr(self, 'assets') and self.assets.engines:
+                    default = self.assets.engines[0]
+                    self.current_engine_info["name"] = default["name"]
+                    self.current_engine_info["path"] = default["path"]
+                else:
+                    self.current_engine_info["path"] = ""
+
+                self.analyzer = analysis_engine.AnalysisEngine(
+                    self.current_engine_info["path"],
+                    opening_book=getattr(self.assets, 'openings', {}),
+                    book_positions=getattr(self.assets, 'book_positions', set()),
+                    threads=self.settings.get("engine_threads", 4),
+                    hash_size=self.settings.get("engine_hash", 512)
+                )
+
+                success = self.analyzer.start()
+                if not success:
+                    print("CRITICAL: Engine failed to start! Check console.")
+                    self.status_msg = "Engine failed to start"
+                    self.review_popup = ReviewPopup(self, self.history, self.current_engine_info["path"], self.assets, headers, None)
+                    return
+
+                print(f"ENGINE STATUS: {self.analyzer.current_engine_name} is ACTIVE")
+
+            # 2. Open the ReviewPopup — if a proper deep analysis cache exists, pass it in.
+            # Otherwise pass None so ReviewPopup.start_analysis() runs the full Stockfish deep review.
+            valid_cache = None
+            if (
+                isinstance(self.cached_review, tuple) and
+                len(self.cached_review) >= 4 and
+                isinstance(self.cached_review[1], dict) and
+                len(self.cached_review[1]) > 0
+            ):
+                valid_cache = self.cached_review
+
+            self.review_popup = ReviewPopup(self, self.history, self.current_engine_info["path"], self.assets, headers, valid_cache)
         elif tag == "gm_move": self.gm_move_popup = GMPopup(self)
         elif tag == "enginehint": self.show_hints = not self.show_hints
         elif tag == "threats": self.show_threats = not self.show_threats
@@ -2315,7 +2584,6 @@ class ChessApp:
             self.settings["live_annotations"] = not self.settings.get("live_annotations", True)
             self.save_config()
             self.status_msg = f"Live Annotations: {'ON' if self.settings['live_annotations'] else 'OFF'}"
-        elif tag == "save": self.save_popup = PGNSavePopup(self)
         elif tag == "save": self.save_popup = PGNSavePopup(self)
         elif tag == "copy_fen":
             # Fetch FEN of the exact ply currently being viewed
@@ -2356,41 +2624,52 @@ class ChessApp:
         elif tag == "profile":
             self.profile_popup = ProfilePopup(self)
             self.sound_manager.play("click")
+        elif tag == "account":
+            from popups import AccountPopup
+            self.account_popup = AccountPopup(self)
+            self.account_popup.active = True
+        elif tag == "dark_theme":
+            current = self.settings.get("dark_theme", False)
+            self.settings["dark_theme"] = not current
+            if self.settings["dark_theme"]:
+                THEME["bg"]       = (28, 28, 32)
+                THEME["panel"]    = (38, 38, 44)
+                THEME["text"]     = (220, 220, 225)
+                THEME["text_dim"] = (140, 140, 150)
+                THEME["border"]   = (60, 60, 70)
+            else:
+                THEME["bg"]       = (240, 240, 245)
+                THEME["panel"]    = (255, 255, 255)
+                THEME["text"]     = (20, 20, 20)
+                THEME["text_dim"] = (100, 100, 100)
+                THEME["border"]   = (200, 200, 200)
+            self.save_config()
+            self.status_msg = f"Dark Theme: {'ON' if self.settings['dark_theme'] else 'OFF'}"
+        elif tag == "complexity":
+            existing = getattr(self, 'complexity_popup', None)
+            if existing and existing.active:
+                existing.active = False
+            else:
+                from popups import ComplexityPopup
+                self.complexity_popup = ComplexityPopup(self)
+                self.complexity_popup.active = True
         elif tag == "calibrate":
             import popups
-            self.side_popup = popups.BatchCalibrationPopup(self)
             self.side_popup.active = True
     def run(self):
         while self.running:
             try:
-                self.screen.fill(THEME["bg"])
-                self.renderer.draw_board()
-                self.renderer.draw_ui()
-                
-                # Draw Active Popups
-                for popup in [self.review_popup, self.pgn_popup, self.gm_move_popup, self.bot_popup, 
-                              self.promo_popup, self.save_popup, self.side_popup, self.settings_popup,
-                              self.trainer_popup, self.engine_popup, self.phase_popup, self.puzzle_popup,
-                              self.save_brilliant_popup, self.profile_popup, self.active_popup, self.trainer_complete_popup, 
-                              self.fast_import_popup, self.unsaved_popup, self.account_popup]: 
-                    if popup and popup.active:
-                        if isinstance(popup, (PromotionPopup, SideSelectionPopup)): popup.draw(self.screen)
-                        else: popup.draw(self.screen, self.font_b, self.font_m)
-                # Draw chat commentary panel if enabled
-                if getattr(self, 'show_chat_commentary', False):
-                    chat_x = self.bd_x + self.bd_sz + 150
-                    chat_y = self.bd_y + 300
-                    chat_w = 350
-                    chat_h = 200
-                    self.renderer._draw_chat_commentary(chat_x, chat_y, chat_w, chat_h)
+                # Smart frame management: determine target FPS
+                # 1. PROCESS QUEUES FIRST
                 while self.ui_queue:
                     m = self.ui_queue.pop(0)
                     if m[0] == "move": self.apply_move(m[1])
                     elif m[0] == "chat": self.add_chat(m[1][0], m[1][1])
                     elif m[0] == "speak": self.speech_queue.put((m[1], self.active_bot["name"] if self.active_bot else "Stockfish"))
+
+                # 2. EVENT HANDLING SECOND (Ensures immediate UI response)
                 for e in pygame.event.get():
                     if e.type == pygame.QUIT:
-                        # FIX: Prevent the window from closing if a game is in progress
                         if getattr(self, 'unsaved_analysis', False) or len(self.history) > 0:
                             self.pending_action = "quit"
                             from popups import UnsavedAnalysisPopup
@@ -2406,42 +2685,55 @@ class ChessApp:
                     elif e.type == pygame.VIDEORESIZE:
                         self.width, self.height = e.w, e.h; self.screen = pygame.display.set_mode(e.size, pygame.RESIZABLE); self.calc_layout()
                         
-                    # --- GRANDMASTER EXPLORER HOTKEY & EVENTS ---
-                    if e.type == pygame.KEYDOWN and e.key == pygame.K_e:
+                    # Check if any popup has active text input before allowing keyboard toggles
+                    any_popup_typing = False
+                    for p in [getattr(self, 'add_account_popup', None), self.trainer_popup, getattr(self, 'complexity_popup', None)]:
+                        if p and getattr(p, 'active', False):
+                            if hasattr(p, 'active_field') and p.active_field is not None:
+                                any_popup_typing = True
+                                break
+                            if hasattr(p, 'edit_idx') and p.edit_idx >= 0:
+                                any_popup_typing = True
+                                break
+                            if hasattr(p, 'filter_text') and hasattr(p, 'cursor_timer'):
+                                # Trainer popup in filter mode - check if recently typed
+                                any_popup_typing = True
+                                break
+                    
+                    # H key - toggle complexity popup (only when not typing)
+                    if e.type == pygame.KEYDOWN and e.key == pygame.K_h and not any_popup_typing:
+                        self.handle_ui("complexity")
+
+                    # E key - toggle database explorer (only when not typing and not in trainer popup)
+                    if e.type == pygame.KEYDOWN and e.key == pygame.K_e and not any_popup_typing:
                         if not any(p and getattr(p, 'active', False) for p in [self.trainer_popup]):
                             self.explorer_ui.is_open = not self.explorer_ui.is_open
-                            
-                            # Auto-Fetch the moment the user opens the Explorer!
                             if self.explorer_ui.is_open:
-                                self.explorer_db.current_results = None # Wipe old data instantly
-                                self.explorer_ui.scroll_y = 0           # Reset scroll to the top
-                                
-                                # Build the ghost board for the exact ply you are viewing
+                                self.explorer_db.current_results = None 
+                                self.explorer_ui.scroll_y = 0           
                                 view_board = chess.Board()
                                 for i in range(self.view_ply):
                                     view_board.push(self.history[i]["move"])
-                                    
-                                # Trigger the background database search
                                 self.explorer_db.fetch_position_async(view_board)
                     
                     if getattr(self.explorer_ui, 'is_open', False):
                         if self.explorer_ui.handle_event(e, self.explorer_db, self.board):
                             continue 
-                    # ---------------------------------------------
-                    # Popup Event Delegation
+                            
                     current_ui_popup = None
-                    for p in [self.unsaved_popup, self.fast_import_popup, self.trainer_complete_popup, self.save_brilliant_popup, self.puzzle_popup, self.phase_popup, self.engine_popup,
+                    for p in [getattr(self, 'add_account_popup', None), self.unsaved_popup, self.fast_import_popup, self.trainer_complete_popup, self.save_mate_popup, self.puzzle_popup, self.phase_popup, self.engine_popup,
                               self.trainer_popup, self.settings_popup, self.save_popup, self.promo_popup,
                               self.pgn_popup, self.gm_move_popup, self.active_popup, self.bot_popup, self.review_popup, self.side_popup, self.account_popup]:
+                        # NOTE: complexity_popup is intentionally excluded here — it is a
+                        # non-modal overlay that must never block keyboard game navigation
+                        # (arrow keys, etc.).  Its clicks are handled by self.handle_click().
                         if p and getattr(p, 'active', False):
                             current_ui_popup = p
                             break
                     if current_ui_popup:
-                        # Let the popup consume input first (keyboard or mouse)
                         if hasattr(current_ui_popup, 'handle_input'):
                             try: current_ui_popup.handle_input(e)
                             except Exception: pass
-                        # Mouse down or Wheel -> scrolling or click down behaviour
                         if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
                             if hasattr(current_ui_popup, 'handle_scroll'):
                                 try: current_ui_popup.handle_scroll(e)
@@ -2449,65 +2741,53 @@ class ChessApp:
                             if hasattr(e, 'button') and e.button in (1, 3) and hasattr(current_ui_popup, 'handle_click'):
                                 try: current_ui_popup.handle_click(e.pos)
                                 except Exception: pass
-                        # Mouse up -> Handle any specific mouse-up logic if needed in the future
-                        if e.type == pygame.MOUSEBUTTONUP:
-                            # FIX: Removed the duplicate handle_click(e.pos) call here.
-                            # This prevents checkboxes and toggles from firing twice (auto-unclicking).
-                            pass
                         continue
-                    # Main
+                        
                     if e.type == pygame.KEYDOWN:
-                        if e.key == pygame.K_LEFT: 
+                        if e.key == pygame.K_F11:
+                            # RESTORED: Fullscreen Toggle
+                            self.is_fullscreen = not getattr(self, 'is_fullscreen', True)  # <-- FIX: Check 'self'
+                            if self.is_fullscreen:
+                                self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN | pygame.DOUBLEBUF | pygame.HWSURFACE)
+                            else:
+                                self.screen = pygame.display.set_mode((1400, 1000), pygame.RESIZABLE | pygame.DOUBLEBUF | pygame.HWSURFACE)
+                            self.width, self.height = self.screen.get_size()
+                            self.calc_layout()
+                            
+                        elif e.key == pygame.K_LEFT: 
                             if self.view_ply > 0: 
                                 self.view_ply -= 1
                                 self.update_opening_label()
-                                
-                                # --- FIX: Responsive Rewind ---
-                                # Play a crisp click sound so navigating backwards feels tactile
                                 self.sound_manager.play("click")
-                                
-                                # Clear any visual arrows that belong to the later move
                                 self.user_arrows = [] 
                                 self.temp_arrow_start = None
                                 self.temp_arrow_end = None
-                                # ------------------------------
                         elif e.key == pygame.K_RIGHT: 
                             if self.view_ply < len(self.history): 
                                 self.view_ply += 1
                                 self.update_opening_label()
-                                
-                                # --- FIX: Trigger Bot Speech on Keyboard Navigation ---
                                 if self.settings.get("speech", True):
                                     step = self.history[self.view_ply - 1]
-                                    bot = getattr(self, 'active_bot', None) or {"name": "System", "style": "GM"}
-                                    
-                                    # 1. Grab move classification (blunder, great, etc.)
-                                    move_class = step.get("review", {}).get("class", "move")
-                                    chat_event = "blunder" if move_class in ["blunder", "miss"] else "move"
-                                    
-                                    # 2. Check for Checks/Mates using the FEN
-                                    if step.get("fen"):
-                                        tmp = chess.Board(step["fen"])
-                                        if tmp.is_checkmate(): chat_event = "checkmate"
-                                        elif tmp.is_check(): chat_event = "check"
-                                    
-                                    # 3. Build the context for the personality engine
-                                    context = {
-                                        "bot_name": bot.get("name", "System"),
-                                        "style": bot.get("style", "GM"),
-                                        "event": chat_event,
-                                        "eval": step.get("review", {}).get("eval_cp", 0),
-                                        "is_white": (self.view_ply % 2 != 0)
-                                    }
-                                    
-                                    import bot_personalities
-                                    voice_line = bot_personalities.get_bot_chat(context)
-                                    
-                                    # 4. Push to UI Chat and Audio Queue
-                                    if voice_line:
-                                        self.ui_queue.append(("chat", (bot.get("name", "System"), voice_line)))
-                                        self.speech_queue.put((voice_line, bot.get("name", "System")))
-                                # --------------------------------------------------------
+                                    if isinstance(step, dict):
+                                        bot = getattr(self, 'active_bot', None) or {"name": "System", "style": "GM"}
+                                        move_class = step.get("review", {}).get("class", "move")
+                                        chat_event = "blunder" if move_class in ["blunder", "miss"] else "move"
+                                        if step.get("fen"):
+                                            tmp = chess.Board(step["fen"])
+                                            if tmp.is_checkmate(): chat_event = "checkmate"
+                                            elif tmp.is_check(): chat_event = "check"
+                                        context = {
+                                            "bot_name": bot.get("name", "System"),
+                                            "style": bot.get("style", "GM"),
+                                            "event": chat_event,
+                                            "eval": step.get("review", {}).get("eval_cp", 0),
+                                            "is_white": (self.view_ply % 2 != 0)
+                                        }
+                                        import bot_personalities
+                                        voice_line = bot_personalities.get_bot_chat(context)
+                                        if voice_line:
+                                            self.ui_queue.append(("chat", (bot.get("name", "System"), voice_line)))
+                                            self.speech_queue.put((voice_line, bot.get("name", "System")))
                         elif e.key == pygame.K_UP: self.scroll_hist = max(0, self.scroll_hist - 25)
                         elif e.key == pygame.K_DOWN: self.scroll_hist += 25
                         if e.mod & pygame.KMOD_CTRL:
@@ -2518,12 +2798,32 @@ class ChessApp:
                     elif e.type == pygame.MOUSEBUTTONDOWN:
                         if e.button == 4: self.scroll_hist = max(0, self.scroll_hist - 40)
                         elif e.button == 5: self.scroll_hist += 40
-                        elif e.button in [1, 3]: self.handle_click(e.pos, "down") # 1=left, 3=right
-                    
+                        elif e.button in [1, 3]:
+                            # Check move list zones on DOWN so navigation feels instant
+                            _move_clicked = False
+                            for _r, _ply in self.move_click_zones:
+                                if _r.collidepoint(e.pos):
+                                    # --- BUG FIX: Smart Ply Adjustment & Artifact Cleanup ---
+                                    # 1. Fix Off-by-One if UI Renderer stores 0-based indexes
+                                    is_zero_based = (len(self.move_click_zones) > 0 and self.move_click_zones[0][1] == 0)
+                                    self.view_ply = _ply + 1 if is_zero_based else _ply
+                                    
+                                    # 2. Clear all visual artifacts so they don't float on the past board!
+                                    self.selected = None
+                                    self.valid_moves = []
+                                    self.arrows = []
+                                    self.user_arrows = []
+                                    self.threat_arrow = None
+                                    if hasattr(self, 'last_move_analysis'): 
+                                        self.last_move_analysis = None
+                                        
+                                    self.update_opening_label()
+                                    _move_clicked = True
+                                    break
+                            if not _move_clicked:
+                                self.handle_click(e.pos, "down")
                     elif e.type == pygame.MOUSEMOTION:
-                        # Handle Arrow Dragging Visuals
                         if pygame.mouse.get_pressed()[2] and self.temp_arrow_start is not None:
-                             # Check square under mouse
                              mx, my = e.pos
                              if 0 <= mx - self.bd_x <= self.bd_sz and 0 <= my - self.bd_y <= self.bd_sz:
                                  c, r = (mx - self.bd_x)//self.sq_sz, (my - self.bd_y)//self.sq_sz
@@ -2537,13 +2837,86 @@ class ChessApp:
                             for tag, r in self.btn_rects.items():
                                 if r.collidepoint(e.pos): self.handle_ui(tag); ui_clicked = True; break
                             if not ui_clicked: self.handle_click(e.pos, "up")
+                            self.dragging_piece = None  # cancel drag AFTER handle_click has processed the drop
                         elif e.button == 3:
                                 self.handle_click(e.pos, "up")
-                # --- DRAW THE EXPLORER BOX LAST SO IT FLOATS ON TOP ---
+
+                # 3. COMPUTE FRAME RATE REQUIREMENTS
+                popup_active = any(popup and popup.active for popup in [self.review_popup, self.pgn_popup, self.gm_move_popup, self.bot_popup, 
+                                       self.promo_popup, self.save_popup, self.side_popup, self.settings_popup,
+                                       self.trainer_popup, self.engine_popup, self.phase_popup, self.puzzle_popup,
+                                       self.save_mate_popup, self.profile_popup, self.active_popup, self.trainer_complete_popup, 
+                                       self.fast_import_popup, self.unsaved_popup, self.account_popup,
+                                       getattr(self, 'add_account_popup', None),   
+                                       getattr(self, 'complexity_popup', None)])
+                
+                is_evaluating = (self.analyzer and self.analyzer.is_active and not self.board.is_game_over())
+                mouse_moving = pygame.mouse.get_rel() != (0, 0)
+                
+                if self.animation_active or self.dragging_piece:
+                    target_fps = self.target_fps  # 144 FPS for buttery piece animations
+                elif popup_active or getattr(self.explorer_ui, 'is_open', False) or is_evaluating or mouse_moving:
+                    target_fps = 60  # 60 FPS for smooth UI interactions & live eval updates
+                else:
+                    target_fps = self.static_fps   # 30 FPS for idle battery saving
+
+                # 4. DRAW EVERYTHING
+                # Because of hardware scaling, flipping the full screen is highly efficient.
+                self.screen.fill(THEME["bg"])
+                
+                self.renderer.draw_board()
+                self.renderer.draw_ui()
+                
+                # Update add_account_popup cursor/network timer each frame
+                if getattr(self, 'add_account_popup', None) and self.add_account_popup.active:
+                    try: self.add_account_popup.update(1)
+                    except Exception: pass
+                
+                if getattr(self, 'show_chat_commentary', False):
+                    chat_x = self.bd_x + self.bd_sz + 150
+                    chat_y = self.bd_y + 300
+                    chat_w = 350
+                    chat_h = 200
+                    self.renderer._draw_chat_commentary(chat_x, chat_y, chat_w, chat_h)
+                
+                for popup in [self.review_popup, self.pgn_popup, self.gm_move_popup, self.bot_popup, 
+                              self.promo_popup, self.save_popup, self.side_popup, self.settings_popup,
+                              self.trainer_popup, self.engine_popup, self.phase_popup, self.puzzle_popup,
+                              getattr(self, 'save_mate_popup', None), getattr(self, 'save_brilliant_popup', None), 
+                              self.profile_popup, self.active_popup, self.trainer_complete_popup, 
+                              self.fast_import_popup, self.unsaved_popup, self.account_popup,
+                              getattr(self, 'add_account_popup', None),
+                              getattr(self, 'complexity_popup', None)]:
+                    if popup and popup.active:
+                        if isinstance(popup, (PromotionPopup, SideSelectionPopup)): popup.draw(self.screen)
+                        else: popup.draw(self.screen, self.font_b, self.font_m)
+                        
                 self.explorer_ui.draw(self.screen, self.explorer_db)
-                # ------------------------------------------------------
+
+                # 5. HARDWARE DISPLAY SWAP
                 pygame.display.flip()
-                self.clock.tick(60)
+                self.clock.tick(target_fps)
             except Exception as e: print(e)
 if __name__ == "__main__":
-    ChessApp().run()
+    import multiprocessing
+    import sys
+    import pygame
+    
+    # CRITICAL: Prevents "Zombie Stockfish" and endless windows when compiled to an .exe
+    multiprocessing.freeze_support()
+    
+    app = ChessApp()
+    try:
+        app.run()
+    except Exception as e:
+        print(f"Application Crashed: {e}")
+    finally:
+        # FAILSAFE: Guarantee the engines are forcefully killed the millisecond the window closes
+        if hasattr(app, 'analyzer') and app.analyzer:
+            try: app.analyzer.stop()
+            except: pass
+        if hasattr(app, 'eng_play') and app.eng_play and app.eng_play != "lichess_cloud":
+            try: app.eng_play.quit()
+            except: pass
+        pygame.quit()
+        sys.exit()

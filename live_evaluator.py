@@ -23,16 +23,6 @@ class LiveEvaluator:
         if self._engine is None:
             self._engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
             
-            # --- NEW: Feed Syzygy Tablebases to the Engine ---
-            import os
-            syzygy_dir = os.path.abspath(os.path.join("assets", "syzygy"))
-            if os.path.exists(syzygy_dir) and len(os.listdir(syzygy_dir)) > 0:
-                try:
-                    self._engine.configure({"SyzygyPath": syzygy_dir})
-                    print(f"[ENGINE] Syzygy Tablebases linked from {syzygy_dir}")
-                except Exception as e:
-                    print(f"[ENGINE] Could not configure Syzygy: {e}")
-            
             # --- FIX: Auto-load custom .bin Evaluation Files ---
             import os
             eval_dir = os.path.abspath(os.path.join("assets", "evaluationfiles"))
