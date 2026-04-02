@@ -820,15 +820,22 @@ class ChessApp:
                     return self.assets.engines[0]["path"]
         
         # 3. Last Resort: Ask User
-        # We ensure the root window is ready for the dialog
         try:
+            # FIX: Iconify fullscreen pygame window so the OS dialog appears on top
+            pygame.display.iconify()
             if self.root:
-                self.root.update() 
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
+                self.root.update()
             print("Prompting user for Stockfish executable...")
             file_path = filedialog.askopenfilename(
-                title="Select Stockfish Engine (stockfish.exe)", 
+                title="Select Stockfish Engine (stockfish.exe)",
                 filetypes=[("Executable", "*.exe"), ("All Files", "*.*")]
             )
+            if self.root:
+                self.root.withdraw()
+            pygame.event.clear()
             if file_path and os.path.exists(file_path):
                 return file_path
         except Exception as e:

@@ -745,8 +745,12 @@ class EnginePopup(BasePopup):
         def _probe():
             import chess.engine
             opts = []
+            import sys
             try:
-                eng = chess.engine.SimpleEngine.popen_uci(path)
+                if sys.platform == "win32":
+                    eng = chess.engine.SimpleEngine.popen_uci(path, creationflags=0x08000000)
+                else:
+                    eng = chess.engine.SimpleEngine.popen_uci(path)
                 skip = {"uci_analysemode","uci_chess960","uci_limitstrength","ponder","multipv"}
                 for name, opt in eng.options.items():
                     if name.lower() in skip: continue
@@ -3886,8 +3890,22 @@ class ProfilePopup(BasePopup):
         if self.btn_sort and self.btn_sort.collidepoint(pos): self.sort_by_acc = not self.sort_by_acc; return
         
         if self.btn_import and self.btn_import.collidepoint(pos):
-            path = filedialog.askopenfilename(filetypes=[("PGN Files", "*.pgn")])
-            if path: self.pending_import_path = path
+            # FIX: Iconify fullscreen pygame window so the OS dialog appears on top
+            pygame.display.iconify()
+            if hasattr(self.parent, 'root') and self.parent.root:
+                self.parent.root.deiconify()
+                self.parent.root.lift()
+                self.parent.root.focus_force()
+                self.parent.root.update()
+            path = filedialog.askopenfilename(
+                title="Select PGN File",
+                filetypes=[("PGN Files", "*.pgn")]
+            )
+            if hasattr(self.parent, 'root') and self.parent.root:
+                self.parent.root.withdraw()
+            pygame.event.clear()
+            if path:
+                self.pending_import_path = path
             return
 
         for zone in self.click_zones:
@@ -4063,13 +4081,22 @@ class UnsavedAnalysisPopup(BasePopup):
         self.active = False
 
     def _save_as(self):
-        # FIX: Removed `Tk()` initialization to stop application freezes!
         try:
             from tkinter import filedialog
+            # FIX: Iconify fullscreen pygame window so the OS dialog appears on top
+            pygame.display.iconify()
             if hasattr(self.parent, 'root') and self.parent.root:
+                self.parent.root.deiconify()
+                self.parent.root.lift()
+                self.parent.root.focus_force()
                 self.parent.root.update()
-            filename = filedialog.asksaveasfilename(defaultextension=".pgn", filetypes=[("PGN", "*.pgn")])
-            
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".pgn",
+                filetypes=[("PGN", "*.pgn")]
+            )
+            if hasattr(self.parent, 'root') and self.parent.root:
+                self.parent.root.withdraw()
+            pygame.event.clear()
             if filename:
                 self._save_to_path(filename)
             else:
@@ -4440,8 +4467,20 @@ class LoadGamePopup(BasePopup):
 
         if self.btn_file.collidepoint(pos):
             from tkinter import filedialog
-            if hasattr(self.parent, 'root') and self.parent.root: self.parent.root.update()
-            path = filedialog.askopenfilename(filetypes=[("Chess Files", "*.pgn;*.fen"), ("PGN", "*.pgn"), ("FEN", "*.fen")])
+            # FIX: Iconify fullscreen pygame window so the OS dialog appears on top
+            pygame.display.iconify()
+            if hasattr(self.parent, 'root') and self.parent.root:
+                self.parent.root.deiconify()
+                self.parent.root.lift()
+                self.parent.root.focus_force()
+                self.parent.root.update()
+            path = filedialog.askopenfilename(
+                title="Select Chess File",
+                filetypes=[("Chess Files", "*.pgn;*.fen"), ("PGN", "*.pgn"), ("FEN", "*.fen")]
+            )
+            if hasattr(self.parent, 'root') and self.parent.root:
+                self.parent.root.withdraw()
+            pygame.event.clear()  # discard queued events that piled up while dialog was open
             if path:
                 self.attached_file, self.attached_filename = path, os.path.basename(path)
                 self.pgn_text, self.fen_text, self.active_box = "", "", None
