@@ -391,7 +391,7 @@ class ChessApp:
         
         # Animation/Drag/RightClick
         self.dragging_piece = None
-        self.drag_pos_frect = pygame.FRect(0, 0, 0, 0)
+        self.drag_pos_Rect = pygame.Rect(0, 0, 0, 0)
         self.threat_arrow = None
         self.right_click_start = None
         self.temp_arrow_start = None
@@ -438,7 +438,14 @@ class ChessApp:
         self.font_chat = pygame.font.SysFont("Segoe UI", 14)
         self.font_huge = pygame.font.SysFont("Segoe UI", 60, bold=True)
         self.font_mono = pygame.font.SysFont("Consolas", 14)
-        self.assets = AssetLoader()
+        _saved_piece_set = "default"
+        try:
+            import json as _json
+            with open("settings.json", "r") as _f:
+                _saved_piece_set = _json.load(_f).get("piece_set", "infinix")
+        except Exception:
+            pass
+        self.assets = AssetLoader(piece_set_name=_saved_piece_set)
         self.load_config()
         self.renderer = UIRenderer(self)
         
@@ -534,6 +541,26 @@ class ChessApp:
         self.engine_hash = self.settings.get("engine_hash", 512)
         self.engine_multipv = self.settings.get("engine_multipv", 3)
         self.use_cloud_analysis = self.settings.get("use_cloud_analysis", True)
+        # Restore piece set from settings
+        saved_piece_set = self.settings.get("piece_set", "infinix")
+        if hasattr(self, 'assets') and saved_piece_set != "default":
+            self.assets.piece_set_name = saved_piece_set
+            self.assets.load_piece_set(saved_piece_set)
+    def apply_piece_set(self, set_name):
+        """Loads a piece set by name, resets scaled cache, and saves to settings."""
+        self.assets.piece_set_name = set_name
+        self.assets.load_piece_set(set_name)
+        self.settings["piece_set"] = set_name
+        # Invalidate the renderer's scaled piece cache so it rescales the new set
+        if hasattr(self, 'renderer'):
+            self.renderer.scaled = {}
+            self.renderer.needs_full_redraw = True
+        # Force static board layer rebuild
+        self.static_pieces_surface = None
+        self.static_board_surface = None
+        self.save_config()
+        self.status_msg = f"Piece Set: {set_name.capitalize()}"
+
     def save_config(self):
         try:
             # Sync variables before saving
@@ -873,33 +900,41 @@ class ChessApp:
             self.white_opening = w_book if w_in_book else f"{w_book} *"
             self.black_opening = b_book if b_in_book else f"{b_book} *"
     # --- THREADS ---
+    # --- THREADS ---
     def tts_worker(self):
-        """Plays pre-generated Edge-TTS .mp3 files smoothly."""
-        import json
-        import os
+        """Plays TTS natively and offline using pyttsx3 with dynamic accents."""
         import time
         import queue
-        import pygame
-        import bot_personalities
-        
-        print("\n[AUDIO THREAD] Starting up...")
-        
-        # 1. WAIT for the main game to turn on the Pygame Mixer!
-        while not pygame.mixer.get_init():
-            time.sleep(0.5)
-            
-        print("[AUDIO THREAD] Pygame Mixer connected!")
-        
-        # 2. Load the Voice Map Ledger
-        voice_map = {}
-        map_path = os.path.join("assets", "voices", "voice_map.json")
-        if os.path.exists(map_path):
-            try:
-                with open(map_path, "r", encoding="utf-8") as f:
-                    voice_map = json.load(f)
-                print(f"[AUDIO THREAD] Loaded {len(voice_map)} personas from JSON.")
-            except Exception as e:
-                print(f"[AUDIO ERROR] Error loading voice map: {e}")
+        try:
+            import pyttsx3
+        except ImportError:
+            print("[AUDIO THREAD] pyttsx3 not installed. Please run: pip install pyttsx3")
+            return
+
+        print("\n[AUDIO THREAD] Starting local pyttsx3 engine loop...")
+
+        # ---------------------------------------------------------
+        #  THE BOT PERSONA MATRIX (Speed-Adjusted)
+        #  Maps bot names to their specific voice index and speed
+        # ---------------------------------------------------------
+        bot_personas = {
+            "Spark":    {"index": 11, "rate": 160},  # Mark (US) - Energetic but clear
+            "Cassidy":  {"index": 2,  "rate": 140},  # Linda (CA) - Safe, friendly female
+            "Byte":     {"index": 1,  "rate": 150},  # James (AU) - Confident, upbeat Australian
+            "Vincent":  {"index": 0,  "rate": 125},  # David (US) - Very slow, hesitant learner
+            "Oliver":   {"index": 10, "rate": 140},  # David (US) - Standard, balanced
+            "Arthur":   {"index": 7,  "rate": 155},  # Sean (IE) - Aggressive, punchy Irish
+            "Niles":    {"index": 4,  "rate": 155},  # George (UK) - Fast, aggressive British
+            "Nova":     {"index": 5,  "rate": 135},  # Hazel (UK) - Calm, passive
+            "Eleanor":  {"index": 6,  "rate": 125},  # Susan (UK) - Very measured, slow defender
+            "Armando":  {"index": 3,  "rate": 145},  # Richard (CA) - Sharp, tactical
+            "Veda":     {"index": 8,  "rate": 135},  # Heera (IN) - Calculating Indian female
+            "Catherine":{"index": 14, "rate": 140},  # Catherine (AU) - Crisp Australian historian
+            "Maximus":  {"index": 9,  "rate": 130},  # Ravi (IN) - Deep, authoritative Grandmaster
+            "Stockfish":{"index": 12, "rate": 165},  # Zira (US) - Brisk, robotic female
+            "Checkmate Master": {"index": 4, "rate": 160} # George (UK) - Intense assassin
+        }
+
         while getattr(self, 'running', True):
             try:
                 try: 
@@ -907,46 +942,37 @@ class ChessApp:
                 except queue.Empty: 
                     continue
                 
-                # --- IT CAUGHT THE TEXT! ---
-                print(f"\n[AUDIO THREAD] Caught line from queue: {text[:30]}...")
+                print(f"\n[AUDIO THREAD] Speaking line: {text[:40]}...")
                 
-                # 3. Figure out which persona is speaking
-                persona = "GM"
-                from assets import BOTS
-                for b in BOTS:
-                    if b.get("name") == bot_name:
-                        persona = bot_personalities._ENGINE.get_style_category(b.get("style", "GM"))
-                        break
+                # --- THE FIX: INITIALIZE INSIDE THE LOOP ---
+                tts_engine = pyttsx3.init()
+                voices = tts_engine.getProperty('voices')
+                total_voices = len(voices)
                 
-                # 4. Look up the specific audio file
-                bot_dictionary = voice_map.get(persona, {})
-                filename = bot_dictionary.get(text)
+                # Fetch persona (Default to David US if bot isn't found)
+                persona = bot_personas.get(bot_name, {"index": 0, "rate": 150})
                 
-                if filename:
-                    filepath = os.path.join("assets", "voices", filename)
-                    if os.path.exists(filepath):
-                        try:
-                            # Load directly as a Sound — do NOT also call music.load(),
-                            # which locks the file on Windows and wastes the music stream.
-                            voice_sound = pygame.mixer.Sound(filepath)
-                            voice_sound.set_volume(0.40)
-
-                            # Use Channel 7 to guarantee it never cuts off board SFX
-                            voice_channel = pygame.mixer.Channel(7)
-                            voice_channel.play(voice_sound)
-                            print(f"[AUDIO THREAD] Playing on Channel 7: {filename}")
-                            
-                            while voice_channel.get_busy() and getattr(self, 'running', True):
-                                pygame.time.wait(100)
-                                
-                        except Exception as e:
-                            print(f"[AUDIO ERROR] Playback Error: {e}")
-                    else:
-                        print(f"[AUDIO ERROR] File missing from folder: {filepath}")
-                else:
-                    print(f"[AUDIO MISSING] Not found in JSON -> {persona}: '{text[:30]}...'")
+                # SAFETY CHECK: If someone clones your GitHub repo and only has 3 voices,
+                # this prevents the app from crashing by wrapping the index back to 0.
+                safe_index = persona["index"] if persona["index"] < total_voices else (persona["index"] % max(1, total_voices))
+                
+                # Apply the specific voice and speed
+                try:
+                    tts_engine.setProperty('voice', voices[safe_index].id)
+                    tts_engine.setProperty('rate', persona["rate"])
+                except Exception:
+                    pass # Fallback to system default if property fails
+                
+                # Speak!
+                tts_engine.say(text)
+                tts_engine.runAndWait()
+                
+                # --- THE FIX: DESTROY ENGINE AFTER SPEAKING ---
+                del tts_engine
+                
             except Exception as e:
                 print(f"[AUDIO ERROR] Loop crashed: {e}")
+                time.sleep(1)
     
     def start_ranked_match(self):
         """Finds a bot near the player's Elo and starts a ranked match."""
@@ -2606,6 +2632,10 @@ class ChessApp:
             self.active_popup = LoadGamePopup(self)
             self.active_popup.active = True
         elif tag == "settings": self.settings_popup = SettingsPopup(self)
+        elif tag == "select_piece_set":
+            from popups import PieceSetPopup
+            self.active_popup = PieceSetPopup(self)
+            self.active_popup.active = True
         # 'threat' UI toggle removed — threats remain computed internally but no UI toggle
         elif tag == "engine_load": self.engine_popup = EnginePopup(self)
         elif tag == "puzzles": self.puzzle_popup = PuzzlePopup(self)
@@ -2628,23 +2658,6 @@ class ChessApp:
             from popups import AccountPopup
             self.account_popup = AccountPopup(self)
             self.account_popup.active = True
-        elif tag == "dark_theme":
-            current = self.settings.get("dark_theme", False)
-            self.settings["dark_theme"] = not current
-            if self.settings["dark_theme"]:
-                THEME["bg"]       = (28, 28, 32)
-                THEME["panel"]    = (38, 38, 44)
-                THEME["text"]     = (220, 220, 225)
-                THEME["text_dim"] = (140, 140, 150)
-                THEME["border"]   = (60, 60, 70)
-            else:
-                THEME["bg"]       = (240, 240, 245)
-                THEME["panel"]    = (255, 255, 255)
-                THEME["text"]     = (20, 20, 20)
-                THEME["text_dim"] = (100, 100, 100)
-                THEME["border"]   = (200, 200, 200)
-            self.save_config()
-            self.status_msg = f"Dark Theme: {'ON' if self.settings['dark_theme'] else 'OFF'}"
         elif tag == "complexity":
             existing = getattr(self, 'complexity_popup', None)
             if existing and existing.active:
@@ -2653,9 +2666,7 @@ class ChessApp:
                 from popups import ComplexityPopup
                 self.complexity_popup = ComplexityPopup(self)
                 self.complexity_popup.active = True
-        elif tag == "calibrate":
-            import popups
-            self.side_popup.active = True
+            
     def run(self):
         while self.running:
             try:

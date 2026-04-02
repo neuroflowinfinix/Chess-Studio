@@ -535,6 +535,87 @@ class AnalysisEngine:
 
         # material_delta: positive => gained material, negative => lost material
         return (after_sum - before_sum)
+    
+    def _is_hanging_capture(self, board_before, best_move):
+        """
+        Returns True if best_move captures a piece that can be taken with net material gain
+        (a 'hanging' or 'loose' piece). Uses a lightweight SEE estimate.
+        
+        Three cases:
+          A) Target square has zero defenders → pure freebie
+          B) Attacker value < captured value → winning trade regardless of recapture
+          C) Captured value > cheapest available recapture → still profitable
+        """
+        if best_move is None or not board_before.is_capture(best_move):
+            return False
+        target_sq = best_move.to_square
+        captured  = board_before.piece_at(target_sq)
+        attacker  = board_before.piece_at(best_move.from_square)
+        if not captured or not attacker:
+            return False
+
+        is_white = board_before.turn == chess.WHITE
+        vals = {chess.PAWN: 100, chess.KNIGHT: 310, chess.BISHOP: 325,
+                chess.ROOK: 500, chess.QUEEN: 900, chess.KING: 20000}
+
+        captured_val = vals.get(captured.piece_type, 0)
+        attacker_val = vals.get(attacker.piece_type, 0)
+        defenders    = [sq for sq in board_before.attackers(not is_white, target_sq)]
+
+        # Case A: no defenders at all — pure hanging piece
+        if not defenders:
+            return True
+
+        # Case B: we capture a more valuable piece — winning even after recapture
+        if captured_val > attacker_val:
+            return True
+
+        # Case C: our attacker is cheaper than the cheapest recapture available
+        lowest_def_val = min(
+            vals.get(board_before.piece_at(sq).piece_type, 9999)
+            for sq in defenders if board_before.piece_at(sq)
+        )
+        return captured_val >= lowest_def_val and attacker_val < lowest_def_val
+
+    def _get_positional_context(self, board_before, complexity):
+        """
+        Derives a rich context snapshot used to adjust classification thresholds.
+        
+        Returns a dict with:
+          pressure_factor  — 0.0 (quiet) to 1.0 (chaotic storm), drives leniency
+          is_endgame       — True when few pieces remain (stricter precision required)
+          is_forced        — True when ≤2 legal moves exist
+          tension_pieces   — count of own pieces under enemy attack right now
+          uniqueness_gap   — cp gap between best and 2nd best (move rarity signal)
+        """
+        legal_count = board_before.legal_moves.count()
+        is_forced   = legal_count <= 2
+        is_endgame  = len(board_before.piece_map()) <= 12
+
+        # Count own pieces currently under attack (tactical heat)
+        is_white = board_before.turn == chess.WHITE
+        tension_pieces = 0
+        for sq in chess.SQUARES:
+            piece = board_before.piece_at(sq)
+            if piece and piece.color == is_white:
+                if board_before.attackers(not is_white, sq):
+                    tension_pieces += 1
+
+        # Blend complexity score + piece tension into a single pressure index
+        pressure_factor = min(1.0,
+            (complexity / 100.0) * 0.55 +
+            (min(tension_pieces, 6) / 6.0) * 0.30 +
+            (min(legal_count, 40) / 40.0) * 0.15
+        )
+
+        return {
+            "pressure_factor": pressure_factor,
+            "is_endgame":      is_endgame,
+            "is_forced":       is_forced,
+            "tension_pieces":  tension_pieces,
+            "legal_count":     legal_count,
+        }
+
     def _classify_from_win_chance(self, win_drop, move_is_best, best_vs_second_gap, is_sacrifice, next_cp_pov):
         if win_drop > 20:
             return "blunder"
@@ -633,56 +714,147 @@ class AnalysisEngine:
                 
         return None
 
-    def _classify_move_logic(self, board_before, board_after, move, best_move, 
-                             score_best_cp, score_move_cp, score_second_best_cp, 
+    def _classify_move_logic(self, board_before, board_after, move, best_move,
+                             score_best_cp, score_move_cp, score_second_best_cp,
                              win_pct_best, win_pct_after, in_book=False):
-        
-        # 1. AUTOMATIC CLASSIFICATIONS (Preserved from original)
-        if in_book: return "book"
-        if board_before.legal_moves.count() == 1: return "best" 
-        
-        # Safe defaults for missing scores
-        score_best_cp = 0 if score_best_cp is None else score_best_cp
-        score_move_cp = score_best_cp if score_move_cp is None else score_move_cp
+        """
+        Context-aware move classification pipeline.
+
+        Layer 1 — Automatic:  book / forced
+        Layer 2 — Special:    brilliant / great / blunder  (via evaluate_special_classifications)
+        Layer 3 — Miss:       tactical (free piece ignored) | strategic (2+ pawns left) | legacy (collapse)
+        Layer 4 — Errors:     blunder / mistake / inaccuracy  (pressure-adjusted thresholds)
+        Layer 5 — Quality:    best / excellent / good  (uniqueness-boosted)
+        """
+
+        # ── Layer 1: Automatic ─────────────────────────────────────────────────
+        if in_book:
+            return "book"
+        if board_before.legal_moves.count() == 1:
+            return "best"
+
+        # Safe defaults
+        score_best_cp        = 0 if score_best_cp is None else score_best_cp
+        score_move_cp        = score_best_cp if score_move_cp is None else score_move_cp
         score_second_best_cp = (score_best_cp - 500) if score_second_best_cp is None else score_second_best_cp
 
-        delta = score_move_cp - score_best_cp
+        # Core deltas
+        delta            = score_move_cp - score_best_cp          # ≤ 0 (how far below best)
+        opportunity_gain = score_best_cp - score_move_cp          # ≥ 0 (cp left on the table)
+        win_drop         = max(0.0, float(win_pct_best) - float(win_pct_after))
 
-        # Calculate Win% metrics
-        win_drop = max(0.0, float(win_pct_best) - float(win_pct_after))
         try:
-            wc_best = self._to_win_percentage(score_best_cp, board_before.turn)
+            wc_best   = self._to_win_percentage(score_best_cp,        board_before.turn)
             wc_second = self._to_win_percentage(score_second_best_cp, board_before.turn)
             best_gap_wc = wc_best - wc_second
         except Exception:
-            best_gap_wc = 0
+            best_gap_wc = 0.0
 
-        # 2. DEDICATED SPECIAL MOVES (Brilliant, Great, Blunder)
+        # ── Positional context ─────────────────────────────────────────────────
+        complexity = self.get_position_complexity(board_before)
+        ctx        = self._get_positional_context(board_before, complexity)
+
+        # Pressure leniency: sharp tactical battles forgive small errors slightly.
+        # Endgames are punished harder — precision is mandatory with few pieces.
+        # Range: ~0.85 (dead-quiet endgame) … ~1.25 (explosive tactical storm)
+        pressure_leniency = 1.0 + (ctx["pressure_factor"] * 0.25)
+        if ctx["is_endgame"]:
+            pressure_leniency *= 0.85
+
+        # ── Layer 2: Special moves (brilliant / great / blunder) ───────────────
         special_class = self.evaluate_special_classifications(
-            board_before, board_after, move, score_best_cp, score_move_cp, score_second_best_cp, win_drop, best_gap_wc
+            board_before, board_after, move, score_best_cp, score_move_cp,
+            score_second_best_cp, win_drop, best_gap_wc
         )
         if special_class:
             return special_class
 
-        # 3. MISSES (Winning Advantage Thrown Away - Preserved from original)
-        if win_pct_best > self.MISS_WINNING_THRESHOLD and win_pct_after < self.MISS_EQUAL_BARRIER: 
-            return "miss"
-            
-        # 4. STANDARD MISTAKES & INACCURACIES
-        t = self.CP_THRESHOLDS
-        # CAPS v2 roughly aligns: Blunder > 20%, Mistake > 10%, Inaccuracy > 5%, Good > 2%, Excellent > 0.5%
-        if win_drop > 20.0 or delta <= t.get("blunder", -300): return "blunder"
-        if win_drop > 10.0 or delta <= t.get("mistake", -100): return "mistake"
-        
-        # Losing a massive advantage, but still totally winning (e.g., +9.0 drops to +5.0)
-        if score_move_cp > 300 and score_best_cp > 500: return "inaccuracy" 
-            
-        if win_drop > 5.0 or delta <= t.get("inaccuracy", -40): return "inaccuracy"
+        # ── Layer 3: Miss detection (three independent triggers) ───────────────
+        #
+        # A miss is NOT an error — the played move is objectively fine.
+        # It is a failure to exploit a clear, concrete opportunity.
+        #
+        # We only fire any miss trigger when win_drop ≤ 4.5% so it does NOT
+        # overlap with inaccuracy/mistake/blunder territory.
 
-        # 5. POSITIVE MOVES
-        if move == best_move or win_drop <= 0.5 or delta >= t.get("best", -5): return "best"
-        if win_drop <= 2.0 or delta >= t.get("excellent", -15): return "excellent"
-            
+        if win_drop <= 4.5 and move != best_move:
+
+            # Trigger A — Tactical miss: best move captures a hanging/loose piece
+            # but the player moved something else instead.
+            # The missed piece must be genuinely capturable with material gain (SEE ≥ 0).
+            is_tactical_miss = (
+                not board_before.is_capture(move) and
+                self._is_hanging_capture(board_before, best_move)
+            )
+
+            # Trigger B — Strategic miss: best move would have gained 2+ pawns
+            # compared to what was played, while the played move keeps the position safe.
+            # Threshold: 200 cp (~2 pawns). Position after played move must still be OK.
+            STRATEGIC_MISS_CP = 200  # ~2 pawns; intentionally NOT a calibration param
+            is_strategic_miss = (
+                opportunity_gain >= STRATEGIC_MISS_CP and
+                score_move_cp > -100          # played move leaves a reasonable position
+            )
+
+            # Trigger C — Legacy calibrated miss: had a clearly winning position
+            # but the played move surrendered equality (uses existing CALIB_PARAMS).
+            is_legacy_miss = (
+                win_pct_best  > self.MISS_WINNING_THRESHOLD and
+                win_pct_after < self.MISS_EQUAL_BARRIER
+            )
+
+            if is_tactical_miss or is_strategic_miss or is_legacy_miss:
+                return "miss"
+
+        # ── Layer 4: Errors (pressure-adjusted thresholds) ────────────────────
+        t = self.CP_THRESHOLDS
+
+        # Adjust mistake/inaccuracy thresholds by positional pressure.
+        # Blunder is NEVER lenient — dropping a piece in any position is a blunder.
+        adj_mistake    = t.get("mistake",    -686) * pressure_leniency
+        adj_inaccuracy = t.get("inaccuracy", -604) * pressure_leniency
+
+        if win_drop > 20.0 or delta <= t.get("blunder", -829):
+            return "blunder"
+        if win_drop > 10.0 or delta <= adj_mistake:
+            return "mistake"
+
+        # Losing a massive positional advantage while still winning
+        # (e.g., +9.0 → +5.0 is sloppy even if technically not a mistake by delta alone)
+        if score_move_cp > 300 and score_best_cp > 500:
+            return "inaccuracy"
+
+        if win_drop > 5.0 or delta <= adj_inaccuracy:
+            return "inaccuracy"
+
+        # ── Layer 5: Quality tier (uniqueness-aware) ──────────────────────────
+        #
+        # "Uniqueness" = the played move was the best AND it was significantly better
+        # than any other option. This is the "only move" scenario detected at the
+        # classification level (complementing evaluate_special_classifications which
+        # handles the full sacrifice/tactical analysis).
+        #
+        # If the move uniqueness signal is strong enough, "best" is promoted to "great"
+        # here rather than requiring the sacrifice detection path.
+
+        gap_cp    = score_best_cp - score_second_best_cp   # how unique the best move was
+        gap_great = self.CALIB_PARAMS.get("gap_great", 167)
+
+        move_is_unique = (
+            move == best_move and
+            (gap_cp >= gap_great or best_gap_wc > 10.0) and
+            score_move_cp > 50 and
+            not ctx["is_forced"]   # forced moves are already capped as "best" above
+        )
+
+        if move == best_move or win_drop <= 0.5 or delta >= t.get("best", 415):
+            if move_is_unique and complexity > 30:
+                return "great"    # Only-move in a complex position = great
+            return "best"
+
+        if win_drop <= 2.0 or delta >= t.get("excellent", 360):
+            return "excellent"
+
         return "good"
 
     def classify_move(self, move, board_before, board_after, prev_eval_cp, curr_eval_cp, best_move=None):

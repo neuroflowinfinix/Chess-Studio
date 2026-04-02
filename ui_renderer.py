@@ -436,20 +436,20 @@ class UIRenderer:
         if self.app.trainer_hint_arrow:
             self.draw_dashed_arrow(self.app.trainer_hint_arrow, THEME["trainer_arrow"])
 
-        # 5. Dragged Piece (On Top) - Use FRect for smooth movement
+        # 5. Dragged Piece (On Top) - Use Rect for smooth movement
         if is_dragging_active and self.app.dragging_piece:
             p = self.app.dragging_piece[0]
             k = self.get_piece_key(p)
             if k in self.scaled:
                 img = self.scaled[k]
                 mx, my = pygame.mouse.get_pos()
-                # Update FRect position for smooth sub-pixel movement
-                self.app.drag_pos_frect.x = mx - sq_sz/2
-                self.app.drag_pos_frect.y = my - sq_sz/2
+                # Update Rect position for smooth sub-pixel movement
+                self.app.drag_pos_Rect.x = mx - sq_sz/2
+                self.app.drag_pos_Rect.y = my - sq_sz/2
                 
                 # By passing the float attributes directly, Pygame-CE natively handles 
                 # the sub-pixel positioning for perfectly smooth 144hz tracking
-                self.screen.blit(img, (self.app.drag_pos_frect.x, self.app.drag_pos_frect.y))
+                self.screen.blit(img, (self.app.drag_pos_Rect.x, self.app.drag_pos_Rect.y))
                 
         # --- NEW: Draw the Perfect Eval Bar ---
         # Adjust these numbers (x, y, w, h) to fit your specific layout!

@@ -2926,7 +2926,7 @@ class ButtonsPopup(BasePopup):
             ("Game Mode", "mode"), ("Puzzles", "puzzles"), ("Theme", "theme"),
             ("GM Move", "gm_move"), ("Engine Hints", "enginehint"),
             ("Live Annotations", "annotations"), ("Copy Current FEN", "copy_fen"),
-            ("Dark Theme", "dark_theme"), ("Calibrate Engine", "calibrate"),
+            ("Select Piece Set", "select_piece_set"),
             ("Settings", "settings")
         ]
         self.zones = []
@@ -3238,6 +3238,64 @@ class SettingsPopup(BasePopup):
                  self.parent.settings[key] = not self.parent.settings.get(key, False)
                  self.parent.save_config()
                  return
+
+# =============================================================================
+#  PIECE SET SELECTION POPUP
+# =============================================================================
+class PieceSetPopup(BasePopup):
+    def __init__(self, parent):
+        super().__init__(parent, 400, 420)
+        self.sets = []
+        self.zones = []
+        self._refresh()
+
+    def _refresh(self):
+        from assets import AssetLoader
+        self.sets = AssetLoader.get_available_piece_sets()
+
+    def draw(self, screen, fb, fm):
+        self.draw_bg(screen, "Select Piece Set", fb)
+        y = self.rect.y + 70
+        self.zones = []
+        current = self.parent.settings.get("piece_set", "default")
+
+        for set_name in self.sets:
+            r = pygame.Rect(self.rect.x + 30, y, self.rect.width - 60, 44)
+            is_active = (set_name == current)
+            is_hover = r.collidepoint(pygame.mouse.get_pos())
+
+            if is_active:
+                bg_col = THEME["accent"]
+            elif is_hover:
+                bg_col = (220, 228, 255)
+            else:
+                bg_col = (248, 248, 252)
+
+            pygame.draw.rect(screen, bg_col, r, border_radius=8)
+            pygame.draw.rect(screen, (200, 200, 210), r, 1, border_radius=8)
+
+            label = set_name.capitalize() if set_name != "default" else "Default (Classic)"
+            txt_col = (255, 255, 255) if is_active else (20, 20, 30)
+            t = fm.render(label, True, txt_col)
+            screen.blit(t, (r.x + 16, r.centery - t.get_height() // 2))
+
+            # Active checkmark
+            if is_active:
+                ck = fm.render("✓", True, (255, 255, 255))
+                screen.blit(ck, (r.right - ck.get_width() - 14, r.centery - ck.get_height() // 2))
+
+            self.zones.append((r, set_name))
+            y += 54
+
+    def handle_click(self, pos):
+        if self.close_btn and self.close_btn.collidepoint(pos):
+            self.active = False
+            return
+        for r, set_name in self.zones:
+            if r.collidepoint(pos):
+                self.parent.apply_piece_set(set_name)
+                self.active = False
+                return
 
 class GMPopup:
     def __init__(self, parent):
@@ -4441,19 +4499,21 @@ class LoadGamePopup(BasePopup):
 #  POSITION COMPLEXITY POPUP  (H key)
 # =============================================================================
 class ComplexityPopup:
-    """Live position complexity score with per-side hanging pieces and bar descriptions.
+    """Live position complexity & context overlay.
+    Shows complexity bars, SEE-based hanging/loose piece tiers,
+    positional pressure context, and a miss-opportunity alert.
     Toggle with H key; close with the × button or press H again."""
 
     def __init__(self, parent):
         self.parent     = parent
         self.active     = True
-        w, h            = 400, 460
+        w, h            = 420, 590
         self.rect       = pygame.Rect(parent.width - w - 18,
                                       getattr(parent, 'bd_y', 80), w, h)
         self.close_btn  = None
         self._last_fen  = None
         self._cache     = None
-        self._font_big  = None   # cached to avoid per-frame font creation (Bug B6)
+        self._font_big  = None   # cached to avoid per-frame font creation
 
     # ------------------------------------------------------------------
     def _big_font(self):
@@ -4463,8 +4523,9 @@ class ComplexityPopup:
         return self._font_big
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     def _compute(self):
-        """Compute complexity data including per-side hanging piece lists."""
+        """Compute complexity data with SEE-based hanging/loose tiers and analyzer context."""
         try:
             vp   = getattr(self.parent, 'view_ply', 0)
             hist = getattr(self.parent, 'history', [])
@@ -4480,37 +4541,112 @@ class ComplexityPopup:
 
             legal   = list(board.legal_moves)
             n_legal = len(legal)
-
-            # Per-side hanging piece detection (Bug B3 fix)
-            white_hanging, black_hanging = [], []
-            for sq in chess.SQUARES:
-                p = board.piece_at(sq)
-                if p and board.is_attacked_by(not p.color, sq) \
-                       and not board.is_attacked_by(p.color, sq):
-                    label = chess.piece_symbol(p.piece_type).upper() + chess.square_name(sq)
-                    if p.color == chess.WHITE:
-                        white_hanging.append(label)
-                    else:
-                        black_hanging.append(label)
-            hanging = len(white_hanging) + len(black_hanging)
-
             n_caps  = sum(1 for m in legal if board.is_capture(m))
             n_chks  = sum(1 for m in legal if board.gives_check(m))
 
+            # ── SEE-based piece classification (two tiers) ──────────────────
+            # Tier 1 — Pure hanging: attacked with zero defenders (completely free)
+            # Tier 2 — Loose: defended but SEE-losing (profitable to capture anyway)
+            vals = {chess.PAWN: 100, chess.KNIGHT: 310, chess.BISHOP: 325,
+                    chess.ROOK: 500, chess.QUEEN: 900, chess.KING: 20000}
+
+            white_hanging, black_hanging = [], []   # pure undefended
+            white_loose,   black_loose   = [], []   # SEE-losing but defended
+
+            for sq in chess.SQUARES:
+                p = board.piece_at(sq)
+                if not p or p.piece_type == chess.KING:
+                    continue
+                piece_val  = vals.get(p.piece_type, 0)
+                attackers  = list(board.attackers(not p.color, sq))
+                defenders  = list(board.attackers(p.color,     sq))
+                label = chess.piece_symbol(p.piece_type).upper() + chess.square_name(sq)
+
+                if attackers and not defenders:
+                    # Tier 1: completely undefended
+                    if p.color == chess.WHITE: white_hanging.append(label)
+                    else:                       black_hanging.append(label)
+                elif attackers and defenders:
+                    # Tier 2: check if cheapest attacker beats the piece even after recapture
+                    cheapest_attacker = min(
+                        vals.get(board.piece_at(s).piece_type, 9999)
+                        for s in attackers if board.piece_at(s)
+                    )
+                    cheapest_defender = min(
+                        vals.get(board.piece_at(s).piece_type, 9999)
+                        for s in defenders if board.piece_at(s)
+                    )
+                    # SEE-losing: the piece can be taken profitably even considering recapture
+                    if piece_val > cheapest_attacker and piece_val >= cheapest_defender:
+                        if p.color == chess.WHITE: white_loose.append(label)
+                        else:                       black_loose.append(label)
+
+            hanging = len(white_hanging) + len(black_hanging)
+            loose   = len(white_loose)   + len(black_loose)
+
+            # ── Analyzer positional context ─────────────────────────────────
+            analyzer = getattr(self.parent, 'analyzer', None)
+            ctx = None
+            pressure_factor   = 0.0
+            pressure_leniency = 1.0
+
+            if analyzer and callable(getattr(analyzer, 'get_position_complexity', None)):
+                try:
+                    complexity_raw = analyzer.get_position_complexity(board)
+                    ctx = analyzer._get_positional_context(board, complexity_raw)
+                    pressure_factor   = ctx["pressure_factor"]
+                    pressure_leniency = 1.0 + (pressure_factor * 0.25)
+                    pcs_left = len(board.piece_map())
+                    if pcs_left <= 12:           # endgame
+                        pressure_leniency *= 0.85
+                except Exception:
+                    ctx = None
+
+            # ── Miss-opportunity alert (best move is a winning capture) ──────
+            # Mirrors the tactical-miss trigger in _classify_move_logic.
+            miss_alert = None
+            if analyzer and getattr(analyzer, 'is_active', False):
+                try:
+                    # Use the cached best move from history if available, else skip
+                    hist_entry = hist[vp - 1] if vp > 0 and len(hist) >= vp else None
+                    best_move = None
+                    if isinstance(hist_entry, dict):
+                        rev = hist_entry.get("review", {})
+                        # best_move stored as UCI string in some paths
+                        bm_uci = rev.get("best_move_uci")
+                        if bm_uci:
+                            try: best_move = chess.Move.from_uci(bm_uci)
+                            except Exception: pass
+                    if best_move and analyzer._is_hanging_capture(board, best_move):
+                        captured = board.piece_at(best_move.to_square)
+                        if captured:
+                            piece_name = chess.piece_name(captured.piece_type).capitalize()
+                            sq_name    = chess.square_name(best_move.to_square).upper()
+                            miss_alert = f"Capturable: {piece_name} on {sq_name}"
+                except Exception:
+                    miss_alert = None
+
+            # ── Scores ───────────────────────────────────────────────────────
             pcs_left = sum(1 for sq in chess.SQUARES
                            if (p := board.piece_at(sq)) and p.piece_type != chess.PAWN)
             phase = "Opening" if pcs_left >= 12 else ("Middlegame" if pcs_left >= 6 else "Endgame")
             pm    = {"Opening": 0.7, "Middlegame": 1.0, "Endgame": 0.85}[phase]
             mob   = min(100, int(n_legal * 2.5))
-            ten   = min(100, int(hanging * 20 + n_caps * 8))
+            # Tension now weights both fully-hanging AND SEE-loose pieces
+            ten   = min(100, int(hanging * 22 + loose * 10 + n_caps * 8))
             tac   = min(100, int(n_chks * 25 + n_caps * 6))
             overall = min(100, int((mob * 0.3 + ten * 0.45 + tac * 0.25) * pm))
 
             self._cache = {
                 "overall": overall, "mobility": mob, "tension": ten, "tactics": tac,
-                "phase": phase, "hanging": hanging,
+                "phase": phase, "hanging": hanging, "loose": loose,
                 "white_hanging": white_hanging, "black_hanging": black_hanging,
+                "white_loose":   white_loose,   "black_loose":   black_loose,
                 "captures": n_caps, "checks": n_chks, "legal": n_legal,
+                "pressure_factor":   round(pressure_factor,   2),
+                "pressure_leniency": round(pressure_leniency, 2),
+                "miss_alert": miss_alert,
+                "ctx": ctx,
             }
             return self._cache
         except Exception:
@@ -4518,37 +4654,52 @@ class ComplexityPopup:
 
     # ------------------------------------------------------------------
     def _bar_descriptions(self, d):
-        """Return one-line descriptions for Mobility, Tension, Tactics (Bug B4 fix)."""
+        """Return one-line descriptions for Mobility, Tension, Tactics."""
         eval_val = getattr(self.parent, 'eval_val', 0)
         favors   = ""
         if abs(eval_val) > 150:
             favors = f", favors {'White' if eval_val > 0 else 'Black'}"
 
+        # Pressure modifier hint (only shown when non-trivial)
+        pf = d.get("pressure_factor", 0.0)
+        pl = d.get("pressure_leniency", 1.0)
+        if pl > 1.10:
+            leniency_hint = " — errors more forgivable here"
+        elif pl < 0.92:
+            leniency_hint = " — precision critical"
+        else:
+            leniency_hint = ""
+
         mob  = d["mobility"]
         if mob >= 75:
             mob_desc = f"Very active — {d['legal']} moves available{favors}"
         elif mob >= 45:
-            mob_desc = f"Moderate piece activity — {d['legal']} moves{favors}"
+            mob_desc = f"Moderate piece activity — {d['legal']} moves{favors}{leniency_hint}"
         else:
             mob_desc = f"Restricted — only {d['legal']} legal moves{favors}"
 
-        h, caps = d["hanging"], d["captures"]
-        ten = d["tension"]
+        h    = d["hanging"]
+        loose = d.get("loose", 0)
+        caps = d["captures"]
+        ten  = d["tension"]
         if ten >= 60:
-            ten_desc = f"{h} hanging, {caps} captures — very sharp{favors}"
-        elif ten > 0:
-            ten_desc = f"{h} hanging piece{'s' if h != 1 else ''}, {caps} capture{'s' if caps != 1 else ''}{favors}"
+            ten_desc = f"{h} free, {loose} SEE-loose — very sharp{favors}"
+        elif h > 0 or loose > 0:
+            parts = []
+            if h:    parts.append(f"{h} hanging")
+            if loose: parts.append(f"{loose} SEE-loose")
+            ten_desc = ", ".join(parts) + f", {caps} capture{'s' if caps != 1 else ''}{favors}"
         else:
-            ten_desc = "No hanging pieces — calm position"
+            ten_desc = f"No loose pieces — calm{favors}"
 
         chks = d["checks"]
-        tac = d["tactics"]
+        tac  = d["tactics"]
         if tac >= 60:
-            tac_desc = f"{chks} check{'s' if chks != 1 else ''} + {caps} captures — tactical fireworks"
+            tac_desc = f"{chks} check{'s' if chks != 1 else ''} + {caps} captures — tactical fireworks{leniency_hint}"
         elif tac > 0:
             tac_desc = f"{chks} checking move{'s' if chks != 1 else ''}, {caps} captures — some forcing lines"
         else:
-            tac_desc = "No immediate forcing moves"
+            tac_desc = f"No forcing moves{leniency_hint}"
 
         return mob_desc, ten_desc, tac_desc
 
@@ -4668,44 +4819,103 @@ class ComplexityPopup:
                                  pygame.Rect(self.rect.x + pad, y, fw, 9), border_radius=4)
             y += 20   # bar height + breathing room below bar
 
-        # ── Stats row ────────────────────────────────────────────────────
+        # ── Stats row ─────────────────────────────────────────────────────
         pygame.draw.line(screen, (210, 210, 218),
                          (self.rect.x + pad, y), (self.rect.right - pad, y))
         y += 9
         stats = f"Legal: {d['legal']}   Captures: {d['captures']}   Checks: {d['checks']}"
         screen.blit(fs.render(stats, True, (112, 112, 124)), (self.rect.x + pad, y))
-        y += fs.get_height() + 8
+        y += fs.get_height() + 10
 
-        # ── Hanging pieces (Bug B3 fix) ───────────────────────────────────
-        wh = d["white_hanging"]
-        bh = d["black_hanging"]
+        # ── Pressure Context (from analyzer._get_positional_context) ──────
+        pygame.draw.line(screen, (210, 210, 218),
+                         (self.rect.x + pad, y), (self.rect.right - pad, y))
+        y += 8
+        ctx_title = fm.render("Position Context", True, (58, 58, 70))
+        screen.blit(ctx_title, (self.rect.x + pad, y))
+        y += ctx_title.get_height() + 4
 
-        hang_title = fm.render("Hanging Pieces", True, (58, 58, 70))
+        pf = d.get("pressure_factor", 0.0)
+        pl = d.get("pressure_leniency", 1.0)
+
+        # Pressure factor bar (0.0 – 1.0)
+        pf_label = fs.render(f"Pressure  {pf:.2f}", True, (82, 82, 100))
+        screen.blit(pf_label, (self.rect.x + pad, y))
+        pf_bw = self.rect.width - pad * 2
+        pf_barw = int(pf * pf_bw)
+        pf_col = (80, 140, 220) if pf < 0.4 else (218, 158, 38) if pf < 0.7 else (210, 70, 70)
+        pygame.draw.rect(screen, (215, 215, 222),
+                         pygame.Rect(self.rect.x + pad, y + fs.get_height() + 2, pf_bw, 7), border_radius=3)
+        if pf_barw > 0:
+            pygame.draw.rect(screen, pf_col,
+                             pygame.Rect(self.rect.x + pad, y + fs.get_height() + 2, pf_barw, 7), border_radius=3)
+        y += fs.get_height() + 14
+
+        # Leniency pill — tells the user exactly how the new engine is adjusting thresholds
+        if pl > 1.10:
+            pl_text = f"Leniency +{(pl - 1.0) * 100:.0f}%  (sharp — small errors forgiven)"
+            pl_col  = (55, 160, 95)
+        elif pl < 0.92:
+            pl_text = f"Leniency -{(1.0 - pl) * 100:.0f}%  (endgame — precision critical)"
+            pl_col  = (200, 80, 60)
+        else:
+            pl_text = "Leniency neutral  (standard position)"
+            pl_col  = (100, 100, 120)
+        pl_surf = fs.render(pl_text, True, pl_col)
+        screen.blit(pl_surf, (self.rect.x + pad, y))
+        y += pl_surf.get_height() + 10
+
+        # ── Miss-opportunity alert ─────────────────────────────────────────
+        miss_alert = d.get("miss_alert")
+        if miss_alert:
+            alert_bg = pygame.Rect(self.rect.x + pad, y,
+                                   self.rect.width - pad * 2, fs.get_height() + 10)
+            pygame.draw.rect(screen, (255, 244, 220), alert_bg, border_radius=6)
+            pygame.draw.rect(screen, (218, 158, 38), alert_bg, 1, border_radius=6)
+            alert_surf = fs.render(f"!  {miss_alert} — free material!", True, (140, 90, 20))
+            screen.blit(alert_surf, (alert_bg.x + 8, alert_bg.y + 5))
+            y += alert_bg.height + 8
+
+        # ── Piece Safety (two-tier: hanging + SEE-loose) ──────────────────
+        pygame.draw.line(screen, (210, 210, 218),
+                         (self.rect.x + pad, y), (self.rect.right - pad, y))
+        y += 8
+        hang_title = fm.render("Piece Safety", True, (58, 58, 70))
         screen.blit(hang_title, (self.rect.x + pad, y))
         y += hang_title.get_height() + 4
 
-        if not wh and not bh:
-            screen.blit(fs.render("None — position is safe", True, (90, 160, 90)),
+        wh  = d["white_hanging"]
+        bh  = d["black_hanging"]
+        wlo = d.get("white_loose", [])
+        blo = d.get("black_loose", [])
+
+        if not wh and not bh and not wlo and not blo:
+            screen.blit(fs.render("All pieces safe", True, (90, 160, 90)),
                         (self.rect.x + pad, y))
         else:
-            # White hanging
-            if wh:
-                pieces_str = ", ".join(wh[:6]) + ("…" if len(wh) > 6 else "")
-                w_line = f"White ({len(wh)}):  {pieces_str}"
-            else:
-                w_line = "White:  none"
-            ws = fs.render(w_line, True, (60, 80, 200))
-            screen.blit(ws, (self.rect.x + pad, y))
-            y += ws.get_height() + 3
+            # Tier 1 — completely free (red)
+            if wh or bh:
+                t1_title = fs.render("Free (undefended):", True, (180, 50, 50))
+                screen.blit(t1_title, (self.rect.x + pad, y))
+                y += t1_title.get_height() + 2
+                for color_label, pieces, col in [("W", wh, (60, 80, 200)), ("B", bh, (200, 55, 55))]:
+                    if pieces:
+                        txt = f"  {color_label}: " + ", ".join(pieces[:6]) + ("…" if len(pieces) > 6 else "")
+                        s = fs.render(txt, True, col)
+                        screen.blit(s, (self.rect.x + pad, y))
+                        y += s.get_height() + 2
 
-            # Black hanging
-            if bh:
-                pieces_str = ", ".join(bh[:6]) + ("…" if len(bh) > 6 else "")
-                b_line = f"Black ({len(bh)}):  {pieces_str}"
-            else:
-                b_line = "Black:  none"
-            bs = fs.render(b_line, True, (200, 55, 55))
-            screen.blit(bs, (self.rect.x + pad, y))
+            # Tier 2 — SEE-losing but defended (orange)
+            if wlo or blo:
+                t2_title = fs.render("SEE-loose (profitable capture):", True, (185, 120, 30))
+                screen.blit(t2_title, (self.rect.x + pad, y))
+                y += t2_title.get_height() + 2
+                for color_label, pieces, col in [("W", wlo, (80, 100, 210)), ("B", blo, (210, 100, 50))]:
+                    if pieces:
+                        txt = f"  {color_label}: " + ", ".join(pieces[:6]) + ("…" if len(pieces) > 6 else "")
+                        s = fs.render(txt, True, col)
+                        screen.blit(s, (self.rect.x + pad, y))
+                        y += s.get_height() + 2
 
     # ------------------------------------------------------------------
     def handle_click(self, pos):

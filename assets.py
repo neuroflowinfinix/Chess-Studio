@@ -126,9 +126,10 @@ class SoundManager:
 #  ASSET MANAGER
 # =============================================================================
 class AssetLoader:
-    def __init__(self):
+    def __init__(self, piece_set_name="infinix"):
         self.pieces = {}
         self.icons = {}
+        self.piece_set_name = piece_set_name
         # --- DYNAMIC AVATAR LOADER (Matched to standard icon pathing) ---
         self.avatars = {}
         av_path = os.path.join("assets", "avatars")
@@ -199,14 +200,158 @@ class AssetLoader:
         except Exception as e:
             print(f"Mates Load Error: {e}")
 
-    def load_images(self):
-        for c in ['w','b']:
-            for p in ['p','n','b','r','q','k']:
+    def load_piece_set(self, set_name="infinix"):
+        """
+        Load pieces from a named subfolder under assets/pieces/.
+        Supports: .png, .svg, and .html (containing inline SVG or base64 PNG).
+        Falls back to root assets/pieces/ .png files if nothing else works.
+        set_name examples: "infinix", "staunty", "default"
+        """
+        self.pieces = {}
+        base = os.path.join("assets", "pieces")
+
+        # Determine folder
+        if set_name and set_name != "default":
+            folder = os.path.join(base, set_name)
+            if not os.path.exists(folder):
+                print(f"[PieceSet] Subfolder '{set_name}' not found, falling back to default.")
+                folder = base
+        else:
+            folder = base
+
+        # SVG renderer: try cairosvg, then svglib, then None
+        def _svg_bytes_to_surface(svg_bytes, size=128):
+            # --- Method 1: cairosvg ---
+            try:
+                import cairosvg, io
+                png_data = cairosvg.svg2png(
+                    bytestring=svg_bytes,
+                    output_width=size,
+                    output_height=size
+                )
+                return pygame.image.load(io.BytesIO(png_data)).convert_alpha()
+            except Exception:
+                pass
+            # --- Method 2: svglib + reportlab ---
+            try:
+                import io
+                from svglib.svglib import svg2rlg
+                from reportlab.graphics import renderPM
+                drawing = svg2rlg(io.BytesIO(svg_bytes))
+                if drawing:
+                    png_data = renderPM.drawToString(drawing, fmt="PNG")
+                    return pygame.image.load(io.BytesIO(png_data)).convert_alpha()
+            except Exception:
+                pass
+            return None
+
+        # File name mapping: board uses lowercase keys like 'wp', 'bn', etc.
+        # SVG files are typically named like wP.svg / wN.svg (mixed case) or wp.svg (lower)
+        # We try both casings automatically.
+        def _find_file(folder, key, ext):
+            """Try lowercase, then Title-case second letter (e.g. wn → wN)."""
+            for name in [f"{key}{ext}", f"{key[0]}{key[1].upper()}{ext}"]:
+                p = os.path.join(folder, name)
+                if os.path.exists(p):
+                    return p
+            return None
+
+        for c in ['w', 'b']:
+            for p in ['p', 'n', 'b', 'r', 'q', 'k']:
                 key = c + p
-                path = f"assets/pieces/{key}.png"
-                if os.path.exists(path):
-                    try: self.pieces[key] = pygame.image.load(path).convert_alpha()
-                    except: pass
+                loaded = False
+
+                # 1. PNG — direct load
+                png_path = _find_file(folder, key, ".png")
+                if png_path:
+                    try:
+                        self.pieces[key] = pygame.image.load(png_path).convert_alpha()
+                        loaded = True
+                    except Exception as e:
+                        print(f"[PieceSet] PNG load failed for {key}: {e}")
+
+                # 2. SVG — render to surface
+                if not loaded:
+                    svg_path = _find_file(folder, key, ".svg")
+                    if svg_path:
+                        try:
+                            with open(svg_path, "rb") as sf:
+                                svg_bytes = sf.read()
+                            surf = _svg_bytes_to_surface(svg_bytes)
+                            if surf:
+                                self.pieces[key] = surf
+                                loaded = True
+                            else:
+                                print(f"[PieceSet] SVG render returned None for {key}. Install cairosvg: pip install cairosvg")
+                        except Exception as e:
+                            print(f"[PieceSet] SVG load failed for {key}: {e}")
+
+                # 3. HTML — extract inline SVG or base64 PNG
+                if not loaded:
+                    html_path = _find_file(folder, key, ".html")
+                    if html_path:
+                        try:
+                            import re, io, base64
+                            with open(html_path, "r", encoding="utf-8") as hf:
+                                content = hf.read()
+
+                            # 3a. Try embedded base64 PNG
+                            m = re.search(r'data:image/png;base64,([A-Za-z0-9+/=]+)', content)
+                            if m:
+                                img_data = base64.b64decode(m.group(1))
+                                self.pieces[key] = pygame.image.load(io.BytesIO(img_data)).convert_alpha()
+                                loaded = True
+
+                            # 3b. Try inline SVG block
+                            if not loaded:
+                                m = re.search(r'(<svg[\s\S]*?</svg>)', content, re.IGNORECASE)
+                                if m:
+                                    svg_bytes = m.group(1).encode("utf-8")
+                                    surf = _svg_bytes_to_surface(svg_bytes)
+                                    if surf:
+                                        self.pieces[key] = surf
+                                        loaded = True
+
+                            # 3c. Try embedded base64 SVG
+                            if not loaded:
+                                m = re.search(r'data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)', content)
+                                if m:
+                                    svg_bytes = base64.b64decode(m.group(1))
+                                    surf = _svg_bytes_to_surface(svg_bytes)
+                                    if surf:
+                                        self.pieces[key] = surf
+                                        loaded = True
+                        except Exception as e:
+                            print(f"[PieceSet] HTML load failed for {key}: {e}")
+
+                # 4. Fallback: root assets/pieces/<key>.png
+                if not loaded and folder != base:
+                    fallback = os.path.join(base, f"{key}.png")
+                    if os.path.exists(fallback):
+                        try:
+                            self.pieces[key] = pygame.image.load(fallback).convert_alpha()
+                            loaded = True
+                        except Exception as e:
+                            print(f"[PieceSet] Fallback PNG failed for {key}: {e}")
+
+                if not loaded:
+                    print(f"[PieceSet] WARNING: Could not load piece '{key}' from set '{set_name}'")
+
+    @staticmethod
+    def get_available_piece_sets():
+        """Returns list of available piece set names from subfolders inside assets/pieces/."""
+        sets = []
+        base = os.path.join("assets", "pieces")
+        if os.path.exists(base):
+            for entry in sorted(os.listdir(base)):
+                if os.path.isdir(os.path.join(base, entry)):
+                    sets.append(entry)
+        return sets
+
+    def load_images(self):
+        # Load pieces using the set_name stored on self (set during __init__ via settings)
+        set_name = getattr(self, 'piece_set_name', 'default')
+        self.load_piece_set(set_name)
 
         keys = ["brilliant", "great", "best", "excellent", "good", "miss", "inaccuracy", "mistake", "blunder", "book",
                 "reset", "flip", "mode", "theme", "review", "save", "load", "hint", "undo", 
