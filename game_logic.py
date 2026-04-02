@@ -61,55 +61,61 @@ class GameLogic:
         self.board.push(move)
         
         event = None
-        opponent = self.board.turn # After push, it is the opponent's turn
-        moved_piece = self.board.piece_at(move.to_square)
-        
-        # --- A. Mates & Checks ---
-        if self.board.is_checkmate():
-            event = "checkmate"
-        elif self.board.is_check():
-            if len(self.board.checkers()) > 1:
-                event = "double_check"
-            elif move.to_square not in self.board.checkers():
-                event = "discovered_check"
-            else:
-                event = "check"
-                
-        # --- B. Positional Tactics (Forks & Pins) ---
-        if not event and moved_piece:
-            # Fork Detection: The piece that just moved now attacks 2+ valuable targets
-            attacks = self.board.attacks(move.to_square)
-            valuable_targets = 0
-            for sq in attacks:
-                target_piece = self.board.piece_at(sq)
-                # Count attacked opponent pieces: exclude pawns, but king only counts
-                # if it's the sole check source (avoid double-tagging checked positions as forks)
-                if target_piece and target_piece.color == opponent:
-                    if target_piece.piece_type == chess.PAWN:
-                        continue
-                    if target_piece.piece_type == chess.KING and self.board.is_check():
-                        continue  # King already flagged as check above; don't double-count
-                    valuable_targets += 1
-
-            if valuable_targets >= 2:
-                event = "fork"
-                
-            # Pin Detection: The sliding piece that just moved is now pinning an enemy piece
-            if not event and moved_piece.piece_type in [chess.BISHOP, chess.ROOK, chess.QUEEN]:
+        try:
+            opponent = self.board.turn # After push, it is the opponent's turn
+            moved_piece = self.board.piece_at(move.to_square)
+            
+            # --- A. Mates & Checks ---
+            if self.board.is_checkmate():
+                event = "checkmate"
+            elif self.board.is_check():
+                if len(self.board.checkers()) > 1:
+                    event = "double_check"
+                elif move.to_square not in self.board.checkers():
+                    event = "discovered_check"
+                else:
+                    event = "check"
+                    
+            # --- B. Positional Tactics (Forks & Pins) ---
+            if not event and moved_piece:
+                # Fork Detection: The piece that just moved now attacks 2+ valuable targets
+                attacks = self.board.attacks(move.to_square)
+                valuable_targets = 0
                 for sq in attacks:
-                    p = self.board.piece_at(sq)
-                    if p and p.color == opponent and self.board.is_pinned(opponent, sq):
-                        event = "pin"
+                    target_piece = self.board.piece_at(sq)
+                    # Count attacked opponent pieces: exclude pawns, but king only counts
+                    # if it's the sole check source (avoid double-tagging checked positions as forks)
+                    if target_piece and target_piece.color == opponent:
+                        if target_piece.piece_type == chess.PAWN:
+                            continue
+                        if target_piece.piece_type == chess.KING and self.board.is_check():
+                            continue  # King already flagged as check above; don't double-count
+                        valuable_targets += 1
 
-        # --- C. Standard Actions (Fallbacks) ---
-        if not event:
-            if is_en_passant: event = "en_passant"
-            elif is_castle: event = "castle"
-            elif is_promotion: event = "promote"
-            elif is_capture: event = "capture"
+                if valuable_targets >= 2:
+                    event = "fork"
+                    
+                # Pin Detection: The sliding piece that just moved is now pinning an enemy piece
+                if not event and moved_piece.piece_type in [chess.BISHOP, chess.ROOK, chess.QUEEN]:
+                    for sq in attacks:
+                        p = self.board.piece_at(sq)
+                        if p and p.color == opponent and self.board.is_pinned(opponent, sq):
+                            event = "pin"
 
-        # 3. POP THE MOVE (Restore the board instantly)
-        self.board.pop()
+            # --- C. Standard Actions (Fallbacks) ---
+            if not event:
+                if is_en_passant: event = "en_passant"
+                elif is_castle: event = "castle"
+                elif is_promotion: event = "promote"
+                elif is_capture: event = "capture"
+        except Exception as e:
+            print(f"[analyze_tactical_event] Error during analysis: {e}")
+            event = None
+        finally:
+            # 3. POP THE MOVE (Restore the board — guaranteed even on exception)
+            self.board.pop()
+        
+        return event
         
         return event
 

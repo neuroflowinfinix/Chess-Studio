@@ -157,15 +157,23 @@ class PuzzlePopup(BasePopup):
             dl_label = "Downloading…"
         else:
             if self._online_cache is None:
-                try:
-                    import socket
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(0.4)
-                    s.connect(("8.8.8.8", 53))
-                    s.close()
-                    self._online_cache = True
-                except Exception:
-                    self._online_cache = False
+                # Default to True while async check runs — avoids blocking the draw loop
+                self._online_cache = True
+                
+                def _check_online():
+                    try:
+                        import socket
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.settimeout(2.0)
+                        s.connect(("8.8.8.8", 53))
+                        s.close()
+                        self._online_cache = True
+                    except Exception:
+                        self._online_cache = False
+                        
+                import threading
+                threading.Thread(target=_check_online, daemon=True).start()
+                
             dl_col  = (38, 155, 68) if self._online_cache else (155, 155, 155)
             dl_label = "↓ Lichess Attraction" if self._online_cache else "↓ Offline"
 
@@ -3890,17 +3898,26 @@ class ProfilePopup(BasePopup):
         if self.btn_sort and self.btn_sort.collidepoint(pos): self.sort_by_acc = not self.sort_by_acc; return
         
         if self.btn_import and self.btn_import.collidepoint(pos):
-            # FIX: Iconify fullscreen pygame window so the OS dialog appears on top
-            pygame.display.iconify()
-            if hasattr(self.parent, 'root') and self.parent.root:
-                self.parent.root.update()
-            path = filedialog.askopenfilename(
-                title="Select PGN File",
-                filetypes=[("PGN Files", "*.pgn")]
-            )
-            if hasattr(self.parent, 'root') and self.parent.root:
-                self.parent.root.withdraw()
-            pygame.event.clear()
+            try:
+                # --- FIX: Force the hidden tk root to the very top of the Z-order
+                # so the OS file dialog is not buried behind the Pygame window.
+                if hasattr(self.parent, 'root') and self.parent.root:
+                    self.parent.root.attributes('-topmost', True)
+                    self.parent.root.deiconify()
+                    self.parent.root.lift()
+                    self.parent.root.focus_force()
+                    self.parent.root.update()
+
+                path = filedialog.askopenfilename(filetypes=[("PGN Files", "*.pgn")])
+
+                if hasattr(self.parent, 'root') and self.parent.root:
+                    self.parent.root.attributes('-topmost', False)
+                    self.parent.root.withdraw()
+
+            except Exception as e:
+                print(f"[!] File dialog error: {e}")
+                path = None
+                
             if path:
                 self.pending_import_path = path
             return
@@ -4068,7 +4085,12 @@ class UnsavedAnalysisPopup(BasePopup):
             if self.parent.mode_idx == 1:
                 headers["White"] = "Player" if self.parent.playing_white else self.parent.active_bot["name"]
                 headers["Black"] = self.parent.active_bot["name"] if self.parent.playing_white else "Player"
-            pgn_str = self.parent.logic.export_pgn(headers["White"], headers["Black"], headers)
+            pgn_str = self.parent.logic.export_pgn(
+                history=self.parent.history,
+                white_name=headers.get("White", "Player"),
+                black_name=headers.get("Black", "Stockfish"),
+                headers=headers
+            )
             with open(filename, "w", encoding="utf-8") as f: f.write(pgn_str)
             
             self.parent.unsaved_analysis = False
@@ -4101,13 +4123,42 @@ class UnsavedAnalysisPopup(BasePopup):
             
     def execute_pending(self):
         act = getattr(self.parent, "pending_action", None)
-        if act == "quit": 
-            self.parent.running = False
+        if act == "quit":
             self.parent.save_config()
-            import sys
+
+            # 1. Kill engines FIRST, before pygame tears down (prevents Win32 pipe errors)
+            if hasattr(self.parent, 'analyzer') and self.parent.analyzer:
+                try: self.parent.analyzer.stop()
+                except Exception: pass
+
+            if hasattr(self.parent, 'eng_play') and self.parent.eng_play and \
+                    self.parent.eng_play != "lichess_cloud":
+                try: self.parent.eng_play.quit()
+                except Exception: pass
+
+            # 2. Destroy tkinter root cleanly — call update() first so any
+            #    pending tk events are flushed before destroy() is called.
+            #    A lingering withdrawn root is the main cause of the process
+            #    hanging after pygame.quit() on Windows.
+            if hasattr(self.parent, 'root') and self.parent.root:
+                try:
+                    self.parent.root.update()
+                    self.parent.root.destroy()
+                except Exception: pass
+
+            # 3. Now it is safe to quit pygame and exit.
+            #    os._exit(0) is used as a hard fallback to guarantee the process
+            #    terminates even if daemon threads or lingering tkinter state
+            #    prevents sys.exit() from completing normally.
+            self.parent.running = False
+            import sys, os as _os
             pygame.quit()
-            sys.exit()
-        elif act == "reset": 
+            try:
+                sys.exit(0)
+            except SystemExit:
+                _os._exit(0)
+            
+        elif act == "reset":
             self.parent.reset_game()
             
 # =============================================================================
@@ -5582,7 +5633,22 @@ class BatchCalibrationPopup(BasePopup):
 
         # Decides the no. of pgn input for calibration purposes
         if self.btn_add.collidepoint(pos) and len(self.files) < 70:
-            path = filedialog.askopenfilename(filetypes=[("PGN", "*.pgn")])
+            try:
+                if hasattr(self.parent, 'root') and self.parent.root:
+                    self.parent.root.attributes('-topmost', True)
+                    self.parent.root.deiconify()
+                    self.parent.root.lift()
+                    self.parent.root.focus_force()
+                    self.parent.root.update()
+                path = filedialog.askopenfilename(filetypes=[("PGN", "*.pgn")])
+                if hasattr(self.parent, 'root') and self.parent.root:
+                    self.parent.root.attributes('-topmost', False)
+                    self.parent.root.withdraw()
+                    
+            except Exception as e:
+                print(f"[!] File dialog error: {e}")
+                path = None
+                
             if path:
                 # --- FIX: Read the file and create a row for EVERY game inside it! ---
                 try:

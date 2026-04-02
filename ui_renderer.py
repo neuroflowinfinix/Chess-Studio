@@ -576,34 +576,43 @@ class UIRenderer:
         # 8. Game Over / Check Animations
         # Re-use the elapsed time tracker from the navigation logic
         elapsed = time.time() - getattr(self, 'last_view_time', time.time())
-        
-        if elapsed < 2.5: # 2.5 second duration for these alerts
-            bubbles = [] # List of (square, text, color)
-            
-            if tmp.is_game_over():
-                if tmp.is_checkmate():
-                    loser = tmp.turn
-                    winner = not tmp.turn
-                    l_king = tmp.king(loser)
-                    w_king = tmp.king(winner)
-                    if l_king is not None: bubbles.append((l_king, "Checkmate", (200, 50, 50))) # Red
-                    if w_king is not None: bubbles.append((w_king, "Winner", (50, 180, 50)))  # Green
+
+        if elapsed < 2.5:  # 2.5 second duration for these alerts
+            bubbles = []  # List of (square, text, color)
+
+            # --- FIX: Rebuild a board AT view_ply so check/checkmate detection
+            # matches the position actually being displayed, not the live game board.
+            with self.app.lock:
+                view_tmp = self.app.board.copy()
+            while view_tmp.ply() > self.app.view_ply:
+                if not view_tmp.move_stack:
+                    break
+                view_tmp.pop()
+
+            if view_tmp.is_game_over():
+                if view_tmp.is_checkmate():
+                    loser = view_tmp.turn
+                    winner = not view_tmp.turn
+                    l_king = view_tmp.king(loser)
+                    w_king = view_tmp.king(winner)
+                    if l_king is not None: bubbles.append((l_king, "Checkmate", (200, 50, 50)))  # Red
+                    if w_king is not None: bubbles.append((w_king, "Winner", (50, 180, 50)))    # Green
                 else:
-                    wk = tmp.king(chess.WHITE)
-                    bk = tmp.king(chess.BLACK)
-                    if wk is not None: bubbles.append((wk, "Draw", (120, 120, 120))) # Grey
+                    wk = view_tmp.king(chess.WHITE)
+                    bk = view_tmp.king(chess.BLACK)
+                    if wk is not None: bubbles.append((wk, "Draw", (120, 120, 120)))  # Grey
                     if bk is not None: bubbles.append((bk, "Draw", (120, 120, 120)))
-                    
+
                     # Instantly update main UI status message with the specific draw reason!
                     if self.app.view_ply == len(self.app.history):
-                        if tmp.is_stalemate(): self.app.status_msg = "Draw by Stalemate"
-                        elif tmp.is_insufficient_material(): self.app.status_msg = "Draw (Insufficient Material)"
-                        elif tmp.is_repetition(): self.app.status_msg = "Draw by Repetition"
-                        elif tmp.is_fifty_moves(): self.app.status_msg = "Draw (50-Move Rule)"
+                        if view_tmp.is_stalemate(): self.app.status_msg = "Draw by Stalemate"
+                        elif view_tmp.is_insufficient_material(): self.app.status_msg = "Draw (Insufficient Material)"
+                        elif view_tmp.is_repetition(): self.app.status_msg = "Draw by Repetition"
+                        elif view_tmp.is_fifty_moves(): self.app.status_msg = "Draw (50-Move Rule)"
                         else: self.app.status_msg = "Game Drawn"
-            elif tmp.is_check():
-                chk_king = tmp.king(tmp.turn)
-                if chk_king is not None: bubbles.append((chk_king, "Check", (220, 120, 30))) # Orange
+            elif view_tmp.is_check():
+                chk_king = view_tmp.king(view_tmp.turn)
+                if chk_king is not None: bubbles.append((chk_king, "Check", (220, 120, 30)))  # Orange
             
             # Animate the collected bubbles!
             if bubbles:

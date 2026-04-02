@@ -14,7 +14,11 @@ def load_game_from_pgn(pgn_text):
 
 def generate_history(engine_path, game, multipv=3, time_before=0.06, time_after=0.02, max_plies=200, ignore_book=True):
     """God-Tier WDL History Generator. Extracts native NNUE Win% and Sharpness Gaps."""
-    eng = chess.engine.SimpleEngine.popen_uci(engine_path)
+    import sys
+    if sys.platform == "win32":
+        eng = chess.engine.SimpleEngine.popen_uci(engine_path, creationflags=0x08000000)
+    else:
+        eng = chess.engine.SimpleEngine.popen_uci(engine_path)
     
     # --- Force NNUE & Syzygy for Calibration ---
     try:

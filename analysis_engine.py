@@ -185,8 +185,14 @@ class AnalysisEngine:
                 print("-" * 50)
                 return True
 
-            # 1. Start the Engine Process
-            self.engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
+            # 1. Start the Engine Process — suppress console window on Windows
+            import sys as _sys
+            if _sys.platform == "win32":
+                self.engine = chess.engine.SimpleEngine.popen_uci(
+                    self.engine_path, creationflags=0x08000000
+                )
+            else:
+                self.engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
             
             # 2. Identify Engine Name
             if "name" in self.engine.id:
@@ -1002,6 +1008,9 @@ class AnalysisEngine:
                     if os.path.exists(p):
                         safe_path = p
                         break
+                if safe_path == "lichess_cloud":
+                    # No local engine found — skip this chunk gracefully
+                    return {}
                         
             import sys
             if sys.platform == "win32":
@@ -1198,22 +1207,24 @@ class AnalysisEngine:
                     if progress_callback:
                         progress_callback(int((i / total_moves) * 100), "Analyzing missing evaluation by engine...")
                     board.push(move)
-                    cp, score_text, _ = self.analyze_live(board)
-                    
-                    if "M" in score_text:
-                        # It is a mate! Parse correctly
-                        try:
-                            m_moves = int(score_text.replace("M", "").replace("+", "").replace("-", ""))
-                            cp = -10000 + (m_moves * 100) if "-" in score_text else 10000 - (m_moves * 100)
-                        except ValueError:
-                            cp = -10000 if "-" in score_text else 10000
-                    else:
-                        # --- FIX: STOP capping numerical evaluations! Let exact engine scores pass through! ---
-                        if cp is None:
-                            cp = 0 # Safe fallback
-                    
-                    eval_cp = cp
-                    board.pop()
+                    try:
+                        cp, score_text, _ = self.analyze_live(board)
+                        
+                        if "M" in score_text:
+                            # It is a mate! Parse correctly
+                            try:
+                                m_moves = int(score_text.replace("M", "").replace("+", "").replace("-", ""))
+                                cp = -10000 + (m_moves * 100) if "-" in score_text else 10000 - (m_moves * 100)
+                            except ValueError:
+                                cp = -10000 if "-" in score_text else 10000
+                        else:
+                            # --- FIX: STOP capping numerical evaluations! Let exact engine scores pass through! ---
+                            if cp is None:
+                                cp = 0 # Safe fallback
+                        
+                        eval_cp = cp
+                    finally:
+                        board.pop()  # Always restore board, even if analyze_live throws
                 else:
                     eval_cp = prev_eval_white
                     if progress_callback:
@@ -1643,9 +1654,9 @@ class AnalysisEngine:
         
         for h in history:
             phase = self.get_game_phase(board)
-            if "review" in h:
+            if "review" in h and "accuracy" in h["review"]:
                 # Store accuracy for the phase
-                phases[phase].append(h["review"]["accuracy"])
+                phases[phase].append(h["review"].get("accuracy", 0))
             board.push(h["move"])
             
         stats = {}
@@ -2021,12 +2032,14 @@ class AnalysisEngine:
             if result: last_result = result
         return last_result
 
-    def generate_detailed_reason(self, move, board_before, board_after, move_class, win_loss, best_moves_san=[], opening_name=None):
+    def generate_detailed_reason(self, move, board_before, board_after, move_class, win_loss, best_moves_san=None, opening_name=None):
+        if best_moves_san is None:
+            best_moves_san = []
         ctx = {"move": move, "board_before": board_before, "board_after": board_after, "win_loss": win_loss,
                "best_moves": best_moves_san, "opening": opening_name, "is_check": board_after.is_check(),
                "is_mate": board_after.is_checkmate(), "is_capture": board_before.is_capture(move),
                "material_delta": self._get_material_diff(board_before, board_after),
-               "piece_moved": board_before.piece_at(move.from_square).piece_type,
+               "piece_moved": board_before.piece_at(move.from_square).piece_type if board_before.piece_at(move.from_square) else None,
                "piece_captured": board_before.piece_at(move.to_square).piece_type if board_before.piece_at(move.to_square) else None}
 
         if move_class == "book": return self._explain_book(ctx)
