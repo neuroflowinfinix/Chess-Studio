@@ -3893,9 +3893,6 @@ class ProfilePopup(BasePopup):
             # FIX: Iconify fullscreen pygame window so the OS dialog appears on top
             pygame.display.iconify()
             if hasattr(self.parent, 'root') and self.parent.root:
-                self.parent.root.deiconify()
-                self.parent.root.lift()
-                self.parent.root.focus_force()
                 self.parent.root.update()
             path = filedialog.askopenfilename(
                 title="Select PGN File",
@@ -4086,9 +4083,6 @@ class UnsavedAnalysisPopup(BasePopup):
             # FIX: Iconify fullscreen pygame window so the OS dialog appears on top
             pygame.display.iconify()
             if hasattr(self.parent, 'root') and self.parent.root:
-                self.parent.root.deiconify()
-                self.parent.root.lift()
-                self.parent.root.focus_force()
                 self.parent.root.update()
             filename = filedialog.asksaveasfilename(
                 defaultextension=".pgn",
@@ -4470,9 +4464,6 @@ class LoadGamePopup(BasePopup):
             # FIX: Iconify fullscreen pygame window so the OS dialog appears on top
             pygame.display.iconify()
             if hasattr(self.parent, 'root') and self.parent.root:
-                self.parent.root.deiconify()
-                self.parent.root.lift()
-                self.parent.root.focus_force()
                 self.parent.root.update()
             path = filedialog.askopenfilename(
                 title="Select Chess File",

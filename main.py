@@ -824,9 +824,6 @@ class ChessApp:
             # FIX: Iconify fullscreen pygame window so the OS dialog appears on top
             pygame.display.iconify()
             if self.root:
-                self.root.deiconify()
-                self.root.lift()
-                self.root.focus_force()
                 self.root.update()
             print("Prompting user for Stockfish executable...")
             file_path = filedialog.askopenfilename(
