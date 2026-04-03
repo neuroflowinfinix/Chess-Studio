@@ -1,0 +1,28 @@
+# Chess Application — Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core chess library (board logic, PGN, engine UCI, polyglot)
+python-chess>=1.10.0
+
+# Game window, rendering, audio
+pygame>=2.5.0
+
+# Model persistence (save/load trained review classifier)
+joblib>=1.3.0
+
+# Numerical arrays (feature extraction in analysis_engine)
+numpy>=1.24.0
+
+# HTTP requests (Lichess cloud eval + opening explorer API)
+requests>=2.31.0
+
+# Move classification ML model (lazy-imported inside analysis_engine)
+scikit-learn>=1.3.0
+
+# --- SVG Piece Set Rendering (optional, one of the two is sufficient) ---
+# Method 1: faster, recommended
+cairosvg>=2.7.0
+
+# Method 2: fallback if cairosvg is unavailable
+svglib>=1.5.1
+reportlab>=4.0.0
